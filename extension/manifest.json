@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Flowboard Bridge",
+  "version": "0.0.1",
+  "description": "Bridges Flowboard agent to labs.google via authenticated browser context.",
+  "permissions": ["storage", "scripting", "tabs", "webRequest"],
+  "host_permissions": ["https://labs.google/*", "https://*.google.com/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Flowboard Bridge",
+    "default_popup": "popup.html"
+  },
+  "icons": {}
+}
