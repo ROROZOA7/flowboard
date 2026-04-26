@@ -7,6 +7,7 @@ import pytest
 
 from flowboard.services.flow_sdk import (
     FlowSDK,
+    _extract_inner_api_error,
     _extract_project_id,
     _extract_media_ids,
     extract_media_entries,
@@ -315,3 +316,159 @@ def test_extract_video_operations_handles_missing_and_out_of_order():
     assert out[0]["done"] is False
     assert out[1]["name"] == "b"
     assert out[1]["done"] is True
+
+
+def test_extract_video_operations_recovers_uuid_from_fife_url():
+    """Flow's video poll response omits ``metadata.video.mediaId`` — it only
+    has ``mediaGenerationId`` (base64 protobuf, NOT UUID). The real UUID is
+    embedded in ``fifeUrl`` as ``/video/<UUID>?...``. Without URL recovery
+    we'd return media_entries=[] for a perfectly-finished video."""
+    resp = {
+        "data": {
+            "operations": [
+                {
+                    "status": "MEDIA_GENERATION_STATUS_SUCCESSFUL",
+                    "operation": {
+                        "name": "op-1",
+                        "metadata": {
+                            "video": {
+                                "mediaGenerationId": "CAUS-base64-not-a-uuid",
+                                "fifeUrl": "https://flow-content.google/video/f0b6561a-73f2-4360-96aa-35e071aac9ce?Expires=1&Signature=x",
+                            }
+                        },
+                    },
+                },
+            ]
+        }
+    }
+    out = extract_video_operations(resp, requested=["op-1"])
+    assert out[0]["done"] is True
+    assert out[0]["media_entries"] == [
+        {
+            "media_id": "f0b6561a-73f2-4360-96aa-35e071aac9ce",
+            "url": "https://flow-content.google/video/f0b6561a-73f2-4360-96aa-35e071aac9ce?Expires=1&Signature=x",
+            "mediaType": "video",
+        }
+    ]
+
+
+def test_extract_video_operations_surfaces_per_op_failure():
+    """A real Flow rejection mid-poll: status FAILED at the envelope, plus
+    ``operation.error.message: PUBLIC_ERROR_AUDIO_FILTERED`` on the inner
+    object. Old code only checked SUCCESSFUL → spent the full 7-min timeout
+    polling a doomed op. Worker now treats `error` as terminal."""
+    resp = {
+        "data": {
+            "operations": [
+                {
+                    "status": "MEDIA_GENERATION_STATUS_FAILED",
+                    "operation": {
+                        "name": "vid-bad",
+                        "error": {"code": 3, "message": "PUBLIC_ERROR_AUDIO_FILTERED"},
+                    },
+                },
+            ]
+        }
+    }
+    out = extract_video_operations(resp, requested=["vid-bad"])
+    assert out[0]["done"] is True
+    assert out[0]["error"] == "PUBLIC_ERROR_AUDIO_FILTERED"
+    # No media_entries should be attached when the op itself errored.
+    assert out[0]["media_entries"] == []
+
+
+def test_extract_video_operations_recognizes_status_successful_envelope():
+    """Flow returns operation status at the *outer* envelope level
+    (op["status"]), not on the inner operation. Older code only checked
+    inner.done and missed legitimately-completed videos."""
+    resp = {
+        "data": {
+            "operations": [
+                {
+                    "status": "MEDIA_GENERATION_STATUS_SUCCESSFUL",
+                    "operation": {
+                        "name": "vid-ok",
+                        "metadata": {"video": {"mediaId": "abc-123", "fifeUrl": "https://flow-content.google/video/abc?sig"}},
+                    },
+                },
+                {
+                    "status": "MEDIA_GENERATION_STATUS_PENDING",
+                    "operation": {"name": "vid-pending"},
+                },
+            ]
+        }
+    }
+    out = extract_video_operations(resp, requested=["vid-ok", "vid-pending"])
+    assert out[0]["done"] is True
+    assert out[0]["media_entries"] == [
+        {"media_id": "abc-123", "url": "https://flow-content.google/video/abc?sig", "mediaType": "video"}
+    ]
+    assert out[1]["done"] is False
+    assert out[1]["media_entries"] == []
+
+
+def test_extract_inner_api_error_returns_none_on_success():
+    assert _extract_inner_api_error({"status": 200, "data": {"media": []}}) is None
+    assert _extract_inner_api_error({"data": {"operations": [{"x": 1}]}}) is None
+    assert _extract_inner_api_error("not a dict") is None
+
+
+def test_extract_inner_api_error_surfaces_prominent_people_filter():
+    """Real Flow rejection: status 400 + INVALID_ARGUMENT with the content
+    filter reason. Worker must see this so it doesn't mark the request done
+    with media_ids=[]."""
+    resp = {
+        "id": "abc",
+        "status": 400,
+        "data": {
+            "error": {
+                "code": 400,
+                "message": "Request contains an invalid argument.",
+                "status": "INVALID_ARGUMENT",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED",
+                    }
+                ],
+            }
+        },
+    }
+    err = _extract_inner_api_error(resp)
+    assert err is not None
+    assert "PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED" in err
+    assert "invalid argument" in err.lower()
+
+
+def test_extract_inner_api_error_handles_status_only():
+    """status >= 400 with no structured error body → still report failure."""
+    err = _extract_inner_api_error({"status": 503, "data": {}})
+    assert err == "API_503"
+
+
+@pytest.mark.asyncio
+async def test_gen_image_propagates_prominent_people_filter():
+    """Without the inner-error check, gen_image returned ``media_ids: []``
+    on a content-filter rejection — worker then marked it `done` instead of
+    `failed`. Verify the SDK surfaces an `error` key for the worker."""
+    client = RecordingClient()
+    client.api_response = {
+        "id": "x",
+        "status": 400,
+        "data": {
+            "error": {
+                "status": "INVALID_ARGUMENT",
+                "message": "Request contains an invalid argument.",
+                "details": [
+                    {"reason": "PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED"}
+                ],
+            }
+        },
+    }
+    sdk = FlowSDK(client)
+    out = await sdk.gen_image(
+        prompt="x", project_id="abcd1234", aspect_ratio="IMAGE_ASPECT_RATIO_LANDSCAPE"
+    )
+    assert "error" in out
+    assert "PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED" in out["error"]
+    assert "media_ids" not in out

@@ -26,6 +26,11 @@ export interface FlowboardNodeData extends Record<string, unknown> {
   thumbnailUrl?: string;
   mediaId?: string;
   mediaIds?: string[];
+  variantCount?: number;
+  // AI-generated factual description of mediaId (set by /api/vision/describe).
+  // Spliced into auto-prompts on downstream nodes for richer context.
+  aiBrief?: string;
+  aiBriefStatus?: "pending" | "done" | "failed";
   error?: string;
 }
 
@@ -50,6 +55,7 @@ const TYPE_TITLE: Record<NodeType, string> = {
   video: "Video",
   prompt: "Prompt",
   note: "Note",
+  visual_asset: "Visual asset",
 };
 
 // ── Store ──────────────────────────────────────────────────────────────────
@@ -62,6 +68,7 @@ interface BoardState {
   error: string | null;
 
   loadInitialBoard(): Promise<void>;
+  refreshBoardState(): Promise<void>;
   renameBoard(name: string): Promise<void>;
 
   addNodeOfType(type: NodeType, position: { x: number; y: number }): Promise<void>;
@@ -107,6 +114,8 @@ export const useBoardStore = create<BoardState>((set, get) => ({
           thumbnailUrl: n.data["thumbnailUrl"] as string | undefined,
           mediaId: n.data["mediaId"] as string | undefined,
           mediaIds: n.data["mediaIds"] as string[] | undefined,
+          variantCount: n.data["variantCount"] as number | undefined,
+          aiBrief: n.data["aiBrief"] as string | undefined,
         },
       }));
 
@@ -125,6 +134,40 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       });
     } catch (err) {
       set({ loading: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  async refreshBoardState() {
+    const { boardId } = get();
+    if (boardId === null) return;
+    try {
+      const detail = await getBoard(boardId);
+      const nodes: FlowNode[] = detail.nodes.map((n) => ({
+        id: String(n.id),
+        type: n.type,
+        position: { x: n.x, y: n.y },
+        data: {
+          type: n.type,
+          shortId: n.short_id,
+          title: (n.data["title"] as string | undefined) ?? TYPE_TITLE[n.type],
+          status: n.status,
+          prompt: n.data["prompt"] as string | undefined,
+          thumbnailUrl: n.data["thumbnailUrl"] as string | undefined,
+          mediaId: n.data["mediaId"] as string | undefined,
+          mediaIds: n.data["mediaIds"] as string[] | undefined,
+          variantCount: n.data["variantCount"] as number | undefined,
+          aiBrief: n.data["aiBrief"] as string | undefined,
+          error: n.data["error"] as string | undefined,
+        },
+      }));
+      const edges: Edge[] = detail.edges.map((e) => ({
+        id: String(e.id),
+        source: String(e.source_id),
+        target: String(e.target_id),
+      }));
+      set({ nodes, edges });
+    } catch {
+      // ignore — leave state alone, next poll will retry
     }
   },
 

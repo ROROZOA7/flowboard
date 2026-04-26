@@ -319,6 +319,69 @@ async def test_worker_gen_video_times_out(client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_worker_gen_video_bails_on_per_op_error(client, monkeypatch):
+    """When Flow returns ``operation.error.message`` (e.g. content filter),
+    the worker must stamp the request `failed` immediately rather than
+    polling for the full timeout."""
+    from flowboard.worker import processor as proc
+
+    monkeypatch.setattr(proc, "VIDEO_POLL_INTERVAL_S", 0.01)
+    monkeypatch.setattr(proc, "VIDEO_POLL_MAX_CYCLES", 50)
+
+    poll_count = {"n": 0}
+
+    class _StubSdk:
+        async def gen_video(self, **kwargs):
+            return {"raw": {}, "operation_names": ["op-bad"]}
+
+        async def check_async(self, names):
+            poll_count["n"] += 1
+            return {
+                "raw": {},
+                "operations": [
+                    {
+                        "name": "op-bad",
+                        "done": True,
+                        "media_entries": [],
+                        "status": "MEDIA_GENERATION_STATUS_FAILED",
+                        "error": "PUBLIC_ERROR_AUDIO_FILTERED",
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(proc, "get_flow_sdk", lambda: _StubSdk())
+
+    row = client.post(
+        "/api/requests",
+        json={
+            "type": "gen_video",
+            "params": {
+                "prompt": "x",
+                "project_id": "abcd1234",
+                "start_media_id": "src",
+            },
+        },
+    ).json()
+
+    w = WorkerController(handlers={"gen_video": proc._handle_gen_video})
+    task = asyncio.create_task(w.start())
+    try:
+        w.enqueue(row["id"])
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            current = client.get(f"/api/requests/{row['id']}").json()
+            if current["status"] not in ("queued", "running"):
+                break
+        assert current["status"] == "failed", current
+        assert current["error"] == "PUBLIC_ERROR_AUDIO_FILTERED"
+        # Bail-out must happen on the very first poll, not after polling 50×.
+        assert poll_count["n"] == 1
+    finally:
+        w.request_shutdown()
+        await asyncio.wait_for(task, timeout=2.0)
+
+
+@pytest.mark.asyncio
 async def test_worker_gen_video_rejects_missing_start(client):
     from flowboard.worker.processor import _handle_gen_video
 
@@ -362,3 +425,54 @@ async def test_worker_gen_image_rejects_missing_prompt(client):
     finally:
         w.request_shutdown()
         await asyncio.wait_for(task, timeout=2.0)
+
+
+def test_recover_orphan_running_requests_marks_them_failed(client):
+    """An agent restart while a long-running gen_video poll is mid-flight leaves
+    the request in 'running' forever. The startup recovery hook should sweep
+    those rows to 'failed' so the frontend stops polling indefinitely."""
+    from datetime import datetime, timezone
+
+    from flowboard.db import get_session
+    from flowboard.db.models import Request
+    from flowboard.main import _recover_orphan_running_requests
+
+    # Two stuck running rows + one already-failed (untouched control).
+    with get_session() as s:
+        s.add(Request(
+            type="gen_video",
+            status="running",
+            params={},
+            created_at=datetime.now(timezone.utc),
+        ))
+        s.add(Request(
+            type="gen_image",
+            status="running",
+            params={},
+            created_at=datetime.now(timezone.utc),
+        ))
+        s.add(Request(
+            type="gen_image",
+            status="failed",
+            error="prior",
+            params={},
+            created_at=datetime.now(timezone.utc),
+        ))
+        s.commit()
+
+    touched = _recover_orphan_running_requests()
+    assert touched == 2
+
+    rows = client.get("/api/requests").json() if False else None  # noqa: F841
+    from sqlmodel import select as _select
+    with get_session() as s:
+        rows = s.exec(_select(Request)).all()
+        statuses = sorted([(r.type, r.status, r.error) for r in rows])
+    assert statuses == [
+        ("gen_image", "failed", "agent_restart_lost"),
+        ("gen_image", "failed", "prior"),
+        ("gen_video", "failed", "agent_restart_lost"),
+    ]
+
+    # Idempotent — second call should touch nothing.
+    assert _recover_orphan_running_requests() == 0

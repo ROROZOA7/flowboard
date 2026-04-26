@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import { ensureBoardProject, createRequest, getRequest, patchNode } from "../api/client";
+import { requestAutoBrief } from "../api/autoBrief";
 import { useBoardStore } from "./board";
+
+const AUTO_BRIEF_TYPES = new Set(["character", "visual_asset"]);
 
 type PollEntry = { requestId: number; timerId: ReturnType<typeof setTimeout> | null };
 
@@ -26,22 +29,34 @@ interface GenerationState {
       paygateTier?: string;
       kind?: "image" | "video";
       sourceMediaId?: string;
+      variantCount?: number;
     },
   ): Promise<void>;
+
+  refineImage(
+    rfId: string,
+    opts: { prompt: string; refMediaIds?: string[]; aspectRatio?: string },
+  ): Promise<void>;
+
+  applyVariant(rfId: string, idx: number): void;
 
   cancelGeneration(rfId: string): void;
   clearError(): void;
 }
 
-// Walk the board to collect mediaIds of upstream character nodes feeding into
-// the given image-target node. Returns [] if no characters connected.
-function collectCharacterMediaIds(targetRfId: string): string[] {
+// Walk the board to collect mediaIds of every upstream media-bearing node
+// (character / image / visual_asset) feeding into this image-target node.
+// All of these are passed to Flow as IMAGE_INPUT_TYPE_REFERENCE inputs so the
+// new image is composed from them.
+const REF_SOURCE_TYPES = new Set(["character", "image", "visual_asset"]);
+
+function collectUpstreamRefMediaIds(targetRfId: string): string[] {
   const { nodes, edges } = useBoardStore.getState();
   const ids: string[] = [];
   for (const e of edges) {
     if (e.target !== targetRfId) continue;
     const src = nodes.find((n) => n.id === e.source);
-    if (!src || src.data.type !== "character") continue;
+    if (!src || !REF_SOURCE_TYPES.has(src.data.type)) continue;
     const mid = src.data.mediaId;
     if (typeof mid === "string" && mid) ids.push(mid);
   }
@@ -95,6 +110,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
     paygateTier?: string;
     kind?: "image" | "video";
     sourceMediaId?: string;
+    variantCount?: number;
   }) {
     const projectId = await get().ensureProjectId();
     if (projectId === null) return;
@@ -105,11 +121,16 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       clearTimeout(existingEntry.timerId);
     }
 
-    // Optimistically update node
+    // Optimistically update node — record variantCount so the placeholder
+    // grid matches the eventual variant count even before generation finishes.
+    const variantCount = Math.max(1, Math.min(opts.variantCount ?? 1, 4));
     useBoardStore.getState().updateNodeData(rfId, {
       status: "queued",
       prompt: opts.prompt,
       error: undefined,
+      variantCount,
+      mediaIds: undefined,
+      mediaId: undefined,
     });
 
     // Create request
@@ -135,15 +156,16 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           },
         });
       } else {
-        const characterMediaIds = collectCharacterMediaIds(rfId);
+        const refMediaIds = collectUpstreamRefMediaIds(rfId);
         const params: Record<string, unknown> = {
           prompt: opts.prompt,
           project_id: projectId,
           aspect_ratio: opts.aspectRatio ?? "IMAGE_ASPECT_RATIO_LANDSCAPE",
           paygate_tier: opts.paygateTier ?? "PAYGATE_TIER_ONE",
+          variant_count: variantCount,
         };
-        if (characterMediaIds.length > 0) {
-          params.character_media_ids = characterMediaIds;
+        if (refMediaIds.length > 0) {
+          params.ref_media_ids = refMediaIds;
         }
         reqDto = await createRequest({
           type: "gen_image",
@@ -192,6 +214,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
               status: "done",
               mediaId,
               mediaIds,
+              aiBrief: undefined,
             });
             // Persist to backend so the node survives page reload.
             const dbId = parseInt(rfId, 10);
@@ -206,17 +229,24 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
                   thumbnailUrl: d?.thumbnailUrl,
                   mediaId,
                   mediaIds,
+                  variantCount: d?.variantCount ?? mediaIds.length,
+                  aiBrief: undefined,
                 },
               }).catch(() => {
                 // Non-fatal: the in-memory state is still correct for this session.
               });
+            }
+            // Auto-brief on success for ref-style nodes (character / visual_asset)
+            // so downstream auto-prompt has rich context to work with.
+            const n = useBoardStore.getState().nodes.find((x) => x.id === rfId);
+            if (mediaId && n && AUTO_BRIEF_TYPES.has(n.data.type)) {
+              requestAutoBrief(rfId, mediaId);
             }
             set((s) => {
               const next = { ...s.active };
               delete next[rfId];
               return { active: next };
             });
-            get().openResultViewer(rfId);
           } else if (req.status === "failed") {
             const errMsg = req.error ?? "unknown";
             useBoardStore.getState().updateNodeData(rfId, { status: "error", error: errMsg });
@@ -267,6 +297,141 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       },
     }));
     scheduleNextPoll();
+  },
+
+  async refineImage(rfId, opts) {
+    const projectId = await get().ensureProjectId();
+    if (projectId === null) return;
+
+    const node = useBoardStore.getState().nodes.find((n) => n.id === rfId);
+    const sourceMediaId = node?.data.mediaId;
+    if (!sourceMediaId) {
+      set({ error: "no source image to refine" });
+      return;
+    }
+
+    const existing = get().active[rfId];
+    if (existing && existing.timerId !== null) clearTimeout(existing.timerId);
+
+    useBoardStore.getState().updateNodeData(rfId, {
+      status: "queued",
+      prompt: opts.prompt,
+      error: undefined,
+      variantCount: 1,
+      mediaIds: undefined,
+    });
+
+    const nodeDbId = parseInt(rfId, 10);
+    let reqDto;
+    try {
+      reqDto = await createRequest({
+        type: "edit_image",
+        node_id: isNaN(nodeDbId) ? undefined : nodeDbId,
+        params: {
+          prompt: opts.prompt,
+          project_id: projectId,
+          source_media_id: sourceMediaId,
+          ref_media_ids: opts.refMediaIds ?? [],
+          aspect_ratio: opts.aspectRatio ?? "IMAGE_ASPECT_RATIO_LANDSCAPE",
+        },
+      });
+    } catch (err) {
+      useBoardStore.getState().updateNodeData(rfId, {
+        status: "error",
+        error: err instanceof Error ? err.message : "refine failed",
+      });
+      set({ error: err instanceof Error ? err.message : "refine failed" });
+      return;
+    }
+
+    // Reuse the same poll loop by manually wiring active entry; copy-paste of
+    // dispatchGeneration's poller would be loud, so we do a minimal wait here.
+    const requestId = reqDto.id;
+    set((s) => ({
+      active: { ...s.active, [rfId]: { requestId, timerId: null } },
+    }));
+
+    const poll = async () => {
+      try {
+        const req = await getRequest(requestId);
+        if (req.status === "running" || req.status === "queued") {
+          useBoardStore.getState().updateNodeData(rfId, { status: req.status });
+          const t = setTimeout(poll, 1500);
+          set((s) => ({
+            active: { ...s.active, [rfId]: { requestId, timerId: t } },
+          }));
+          return;
+        }
+        if (req.status === "done") {
+          const mediaIds = (req.result["media_ids"] as string[] | undefined) ?? [];
+          const mediaId = mediaIds[0];
+          useBoardStore.getState().updateNodeData(rfId, {
+            status: "done",
+            mediaId,
+            mediaIds,
+          });
+          const dbId = parseInt(rfId, 10);
+          if (!isNaN(dbId) && mediaId) {
+            const n = useBoardStore.getState().nodes.find((x) => x.id === rfId);
+            const d = n?.data;
+            patchNode(dbId, {
+              data: {
+                title: d?.title,
+                prompt: d?.prompt,
+                mediaId,
+                mediaIds,
+                variantCount: 1,
+              },
+            }).catch(() => {});
+          }
+          set((s) => {
+            const next = { ...s.active };
+            delete next[rfId];
+            return { active: next };
+          });
+          return;
+        }
+        // failed
+        const errMsg = req.error ?? "refine failed";
+        useBoardStore.getState().updateNodeData(rfId, {
+          status: "error",
+          error: errMsg,
+        });
+        set((s) => {
+          const next = { ...s.active };
+          delete next[rfId];
+          return { active: next, error: errMsg };
+        });
+      } catch (err) {
+        const t = setTimeout(poll, 1500);
+        set((s) => ({
+          active: { ...s.active, [rfId]: { requestId, timerId: t } },
+        }));
+        console.warn("refine poll failed", err);
+      }
+    };
+    setTimeout(poll, 800);
+  },
+
+  applyVariant(rfId, idx) {
+    const node = useBoardStore.getState().nodes.find((n) => n.id === rfId);
+    if (!node) return;
+    const ids = node.data.mediaIds ?? [];
+    const target = ids[idx];
+    if (!target) return;
+    useBoardStore.getState().updateNodeData(rfId, { mediaId: target });
+    const dbId = parseInt(rfId, 10);
+    if (!isNaN(dbId)) {
+      patchNode(dbId, {
+        data: {
+          title: node.data.title,
+          prompt: node.data.prompt,
+          mediaId: target,
+          mediaIds: ids,
+          variantCount: node.data.variantCount,
+        },
+      }).catch(() => {});
+    }
   },
 
   cancelGeneration(rfId) {

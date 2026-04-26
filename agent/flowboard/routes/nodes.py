@@ -10,7 +10,7 @@ from flowboard.short_id import generate_unique_short_id
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 
-NodeType = Literal["character", "image", "video", "prompt", "note"]
+NodeType = Literal["character", "image", "video", "prompt", "note", "visual_asset"]
 NodeStatus = Literal["idle", "queued", "running", "done", "error"]
 
 _COORD_MIN = -1_000_000.0

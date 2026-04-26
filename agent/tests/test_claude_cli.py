@@ -55,6 +55,28 @@ async def test_run_claude_passes_argv_and_returns_result():
 
 
 @pytest.mark.asyncio
+async def test_run_claude_attachments_embed_as_at_paths():
+    """Claude CLI accepts file attachments via @<path> tokens in the prompt.
+    `run_claude` joins them onto the user prompt; we never quote (argv) so
+    paths with spaces still work as a single token."""
+    proc = _FakeProc(_envelope("ok"))
+    with patch(
+        "flowboard.services.claude_cli.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=proc),
+    ) as m:
+        await claude_cli.run_claude(
+            user_prompt="describe this",
+            attachments=["/tmp/a.png", "/tmp/b.png"],
+        )
+    argv = list(m.call_args.args)
+    p_idx = argv.index("-p")
+    prompt_arg = argv[p_idx + 1]
+    assert "@/tmp/a.png" in prompt_arg
+    assert "@/tmp/b.png" in prompt_arg
+    assert "describe this" in prompt_arg
+
+
+@pytest.mark.asyncio
 async def test_run_claude_without_system_prompt_omits_flag():
     proc = _FakeProc(_envelope("ok"))
     with patch(

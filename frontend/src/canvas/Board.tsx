@@ -23,10 +23,14 @@ const nodeTypes = {
   video: NodeCard,
   prompt: NodeCard,
   note: NodeCard,
+  visual_asset: NodeCard,
 };
 
 const defaultEdgeOptions = {
-  style: { stroke: "var(--border)", strokeWidth: 1.5 },
+  // Bump the visible stroke + a wider transparent hit area so the edge is
+  // easy to *select*. Selected edge is then deleted via Backspace/Delete.
+  style: { stroke: "var(--border)", strokeWidth: 2, cursor: "pointer" },
+  interactionWidth: 24,
 };
 
 export function Board() {
@@ -86,7 +90,7 @@ export function Board() {
 
   const onNodeDoubleClick = useCallback(
     (_event: React.MouseEvent, node: FlowNode) => {
-      const isGenerable = ["image", "prompt", "video"].includes(node.data.type);
+      const isGenerable = ["image", "prompt", "video", "visual_asset", "character"].includes(node.data.type);
       if (!isGenerable) return;
       const s = useGenerationStore.getState();
       if (node.data.mediaId) {
@@ -122,7 +126,8 @@ export function Board() {
         .getState()
         .nodes.filter(
           (n) =>
-            n.selected && ["image", "prompt", "video"].includes(n.data.type),
+            n.selected &&
+            ["image", "prompt", "video", "character"].includes(n.data.type),
         );
       if (selectedNodes.length === 0) return;
       e.preventDefault();
@@ -151,6 +156,7 @@ export function Board() {
         onNodesDelete={onNodesDelete}
         onEdgesDelete={onEdgesDelete}
         onNodeDoubleClick={onNodeDoubleClick}
+        deleteKeyCode={["Backspace", "Delete"]}
         defaultEdgeOptions={defaultEdgeOptions}
         fitView
         proOptions={{ hideAttribution: true }}

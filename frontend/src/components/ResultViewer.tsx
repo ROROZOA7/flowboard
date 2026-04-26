@@ -20,9 +20,11 @@ function elapsedSeconds(created: string | undefined, finished: string | undefine
 export function ResultViewer() {
   const openViewer = useGenerationStore((s) => s.openViewer);
   const closeResultViewer = useGenerationStore((s) => s.closeResultViewer);
+  const openGenerationDialog = useGenerationStore((s) => s.openGenerationDialog);
   const dispatchGeneration = useGenerationStore((s) => s.dispatchGeneration);
   const projectId = useGenerationStore((s) => s.projectId);
   const nodes = useBoardStore((s) => s.nodes);
+  const edges = useBoardStore((s) => s.edges);
 
   const [activeIdx, setActiveIdx] = useState(0);
   const [mediaReady, setMediaReady] = useState(false);
@@ -36,6 +38,21 @@ export function ResultViewer() {
   const node = nodes.find((n) => n.id === rfId);
   const data = node?.data;
   const mediaIds = data?.mediaIds ?? (data?.mediaId ? [data.mediaId] : []);
+
+  // Upstream nodes feeding this one as reference images (image/video target).
+  const REF_TYPES = new Set(["character", "image", "visual_asset"]);
+  const refSourceNodes = rfId
+    ? edges
+        .filter((e) => e.target === rfId)
+        .map((e) => nodes.find((n) => n.id === e.source))
+        .filter(
+          (n): n is NonNullable<typeof n> =>
+            !!n &&
+            REF_TYPES.has(n.data.type) &&
+            typeof n.data.mediaId === "string" &&
+            n.data.mediaId.length > 0,
+        )
+    : [];
 
   const currentMediaId = rfId && data ? (data.mediaIds?.[activeIdx] ?? data.mediaId ?? null) : null;
 
@@ -170,7 +187,37 @@ export function ResultViewer() {
 
   function handleRegenerate() {
     if (!rfId || !data) return;
+    // Critical: video nodes must dispatch with `kind: "video"` AND a
+    // `sourceMediaId` (the upstream image's mediaId). Without these, the
+    // store falls back to gen_image — silently produces a still image,
+    // overwriting the actual video result on the node. Walk one edge
+    // upstream to find the source image (i2v has a single source).
+    if (data.type === "video") {
+      const upstreamEdge = edges.find((e) => e.target === rfId);
+      const upstreamNode = upstreamEdge
+        ? nodes.find((n) => n.id === upstreamEdge.source)
+        : undefined;
+      const sourceMediaId = upstreamNode?.data.mediaId;
+      if (!sourceMediaId) {
+        useGenerationStore.setState({
+          error: "Video re-gen needs an upstream image with rendered media.",
+        });
+        return;
+      }
+      dispatchGeneration(rfId, {
+        prompt: data.prompt ?? "",
+        kind: "video",
+        sourceMediaId,
+      });
+      return;
+    }
     dispatchGeneration(rfId, { prompt: data.prompt ?? "" });
+  }
+
+  function handleEditPrompt() {
+    if (!rfId || !data) return;
+    closeResultViewer();
+    openGenerationDialog(rfId, data.prompt ?? "");
   }
 
   return (
@@ -282,9 +329,30 @@ export function ResultViewer() {
 
           <span className="result-viewer__section-label">PROMPT</span>
           <p className="result-viewer__prompt">{data.prompt ?? "(no prompt)"}</p>
-          <button className="result-viewer__edit-prompt" onClick={closeResultViewer}>
+          <button className="result-viewer__edit-prompt" onClick={handleEditPrompt}>
             Edit prompt →
           </button>
+
+          {refSourceNodes.length > 0 && (
+            <>
+              <hr className="result-viewer__divider" />
+              <span className="result-viewer__section-label">
+                SOURCE REFERENCES ({refSourceNodes.length})
+              </span>
+              <div className="ref-source-row">
+                {refSourceNodes.map((n) => (
+                  <div key={n.id} className="ref-source-chip" title={n.data.title}>
+                    <img
+                      className="ref-source-chip__img"
+                      src={mediaUrl(n.data.mediaId as string)}
+                      alt={n.data.title}
+                    />
+                    <span className="ref-source-chip__id">#{n.data.shortId}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
 
           <hr className="result-viewer__divider" />
 

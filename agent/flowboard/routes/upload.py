@@ -16,10 +16,15 @@ Design choices:
 from __future__ import annotations
 
 import base64
+import ipaddress
 import logging
+import socket
 from typing import Optional
+from urllib.parse import urlparse
 
+import httpx
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 from sqlmodel import select
 
 from flowboard.db import get_session
@@ -44,6 +49,98 @@ _EXT_BY_MIME = {
     "image/webp": ".webp",
     "image/gif": ".gif",
 }
+
+
+def _sniff_image_mime(raw: bytes) -> Optional[str]:
+    """Detect mime from magic bytes — used when the remote server doesn't send
+    a usable Content-Type or when we want to reject a lying Content-Type."""
+    if len(raw) < 12:
+        return None
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    return None
+
+
+def _is_public_host(host: str) -> bool:
+    """Reject SSRF targets — link uploads must point to a public host, never
+    loopback / private / link-local. The agent runs on the user's box; without
+    this, a malicious link could pivot to the local network."""
+    if not host:
+        return False
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return False
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return False
+    return True
+
+
+async def _ingest_image_bytes(
+    raw: bytes,
+    mime: str,
+    project_id: str,
+    file_name: str,
+    node_id: Optional[int],
+) -> dict:
+    """Push bytes to Flow's uploadImage, cache locally, upsert Asset row."""
+    image_b64 = base64.b64encode(raw).decode("ascii")
+    resp = await get_flow_sdk().upload_image(
+        image_base64=image_b64,
+        mime_type=mime,
+        project_id=project_id,
+        file_name=file_name,
+    )
+    if resp.get("error"):
+        raise HTTPException(
+            status_code=502,
+            detail={"message": resp["error"], "raw": resp.get("raw")},
+        )
+    media_id = resp.get("media_id")
+    if not isinstance(media_id, str) or not media_service.is_valid_media_id(media_id):
+        raise HTTPException(
+            status_code=502,
+            detail={"message": "invalid media_id from Flow", "raw": resp.get("raw")},
+        )
+    ext = _EXT_BY_MIME.get(mime, ".bin")
+    cache_path = media_service.MEDIA_CACHE_DIR / f"{media_id}{ext}"
+    try:
+        cache_path.write_bytes(raw)
+    except OSError as exc:
+        logger.error("failed to write upload cache %s: %s", cache_path, exc)
+        raise HTTPException(status_code=500, detail="failed to cache upload")
+    with get_session() as s:
+        row = s.exec(
+            select(Asset).where(Asset.uuid_media_id == media_id)
+        ).first()
+        if row is None:
+            row = Asset(
+                uuid_media_id=media_id,
+                kind="image",
+                local_path=str(cache_path),
+                mime=mime,
+                node_id=node_id,
+            )
+        else:
+            row.local_path = str(cache_path)
+            row.mime = mime
+            if node_id is not None and row.node_id is None:
+                row.node_id = node_id
+        s.add(row)
+        s.commit()
+    return {"media_id": media_id, "mime": mime, "size": len(raw)}
 
 
 @router.post("/upload")
@@ -74,58 +171,80 @@ async def upload_image(
             detail=f"file too large: {size} > {MAX_UPLOAD_BYTES}",
         )
 
-    image_b64 = base64.b64encode(raw).decode("ascii")
     file_name = file.filename or f"upload{_EXT_BY_MIME.get(mime, '')}"
+    out = await _ingest_image_bytes(raw, mime, project_id, file_name, node_id)
+    logger.info("upload: media_id=%s size=%d mime=%s", out["media_id"], size, mime)
+    return out
 
-    resp = await get_flow_sdk().upload_image(
-        image_base64=image_b64,
-        mime_type=mime,
-        project_id=project_id,
-        file_name=file_name,
-    )
-    if resp.get("error"):
-        raise HTTPException(
-            status_code=502,
-            detail={"message": resp["error"], "raw": resp.get("raw")},
-        )
 
-    media_id = resp.get("media_id")
-    if not isinstance(media_id, str) or not media_service.is_valid_media_id(media_id):
-        raise HTTPException(
-            status_code=502,
-            detail={"message": "invalid media_id from Flow", "raw": resp.get("raw")},
-        )
+class UrlUploadBody(BaseModel):
+    url: str
+    project_id: str
+    node_id: Optional[int] = None
 
-    # Cache bytes locally so /media/:id serves them without going back through
-    # the extension. Upload bytes are user-owned, so unlike fifeUrl-cached
-    # generations there's no signed URL to refresh later.
-    ext = _EXT_BY_MIME.get(mime, ".bin")
-    cache_path = media_service.MEDIA_CACHE_DIR / f"{media_id}{ext}"
+
+@router.post("/upload-url")
+async def upload_image_from_url(body: UrlUploadBody):
+    """Fetch an image at ``body.url`` server-side, validate, then push it
+    through the same Flow upload pipeline as ``/upload``. CORS-free
+    alternative to having the browser fetch the URL itself."""
+    if not is_valid_project_id(body.project_id):
+        raise HTTPException(status_code=400, detail="invalid project_id")
+
+    parsed = urlparse(body.url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="url must be http(s)")
+    if not parsed.netloc:
+        raise HTTPException(status_code=400, detail="url missing host")
+    if not _is_public_host(parsed.hostname or ""):
+        raise HTTPException(status_code=400, detail="url host not public")
+
     try:
-        cache_path.write_bytes(raw)
-    except OSError as exc:
-        logger.error("failed to write upload cache %s: %s", cache_path, exc)
-        raise HTTPException(status_code=500, detail="failed to cache upload")
+        async with httpx.AsyncClient(
+            timeout=15.0, follow_redirects=True, headers={"User-Agent": "Flowboard/0.1"}
+        ) as client:
+            resp = await client.get(body.url)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"fetch failed: {exc}")
 
-    with get_session() as s:
-        row = s.exec(
-            select(Asset).where(Asset.uuid_media_id == media_id)
-        ).first()
-        if row is None:
-            row = Asset(
-                uuid_media_id=media_id,
-                kind="image",
-                local_path=str(cache_path),
-                mime=mime,
-                node_id=node_id,
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=502, detail=f"fetch returned status {resp.status_code}"
+        )
+
+    raw = resp.content
+    size = len(raw)
+    if size == 0:
+        raise HTTPException(status_code=502, detail="empty response body")
+    if size > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413, detail=f"file too large: {size} > {MAX_UPLOAD_BYTES}"
+        )
+
+    mime = (resp.headers.get("content-type", "") or "").lower().split(";")[0].strip()
+    # Server's Content-Type is the hint; magic-byte sniff is the source of
+    # truth (a misconfigured server, or one returning text/html for an HTTP
+    # error masquerading as 200, must not slip through).
+    sniffed = _sniff_image_mime(raw)
+    if mime not in ALLOWED_UPLOAD_MIMES:
+        if sniffed is None:
+            raise HTTPException(
+                status_code=415,
+                detail=f"not an image (content-type {mime!r}, no magic bytes match)",
             )
-        else:
-            row.local_path = str(cache_path)
-            row.mime = mime
-            if node_id is not None and row.node_id is None:
-                row.node_id = node_id
-        s.add(row)
-        s.commit()
+        mime = sniffed
+    elif sniffed is not None and sniffed != mime:
+        # Trust the magic bytes if they disagree.
+        mime = sniffed
 
-    logger.info("upload: media_id=%s size=%d mime=%s", media_id, size, mime)
-    return {"media_id": media_id, "mime": mime, "size": size}
+    # Derive a filename from the URL path or fall back to a generic one.
+    path_name = (parsed.path.rstrip("/").rsplit("/", 1)[-1] or "image").lower()
+    if "." not in path_name:
+        path_name = path_name + _EXT_BY_MIME.get(mime, "")
+
+    out = await _ingest_image_bytes(raw, mime, body.project_id, path_name, body.node_id)
+    logger.info(
+        "upload-url: media_id=%s size=%d mime=%s host=%s",
+        out["media_id"], size, mime, parsed.netloc,
+    )
+    return out

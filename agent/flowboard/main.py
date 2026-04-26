@@ -7,8 +7,9 @@ from fastapi import FastAPI, HTTPException, Header, Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
 
 from flowboard.config import WS_HOST
-from flowboard.db import init_db
-from flowboard.routes import boards, chat, edges, media, nodes, projects, upload
+from flowboard.db import get_session, init_db
+from flowboard.db.models import Request
+from flowboard.routes import boards, chat, edges, media, nodes, plans, projects, prompt, upload, vision
 from flowboard.routes import requests as requests_route
 from flowboard.services.flow_client import flow_client
 from flowboard.services.ws_server import run_ws_server
@@ -27,9 +28,32 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 
+def _recover_orphan_running_requests() -> int:
+    """Mark any pre-existing 'running' requests as failed so a restart doesn't
+    leave nodes polling a request that nobody is processing anymore."""
+    from datetime import datetime, timezone
+    from sqlmodel import select as _select
+
+    touched = 0
+    with get_session() as s:
+        rows = s.exec(_select(Request).where(Request.status == "running")).all()
+        for r in rows:
+            r.status = "failed"
+            r.error = "agent_restart_lost"
+            r.finished_at = datetime.now(timezone.utc)
+            s.add(r)
+            touched += 1
+        if touched:
+            s.commit()
+    return touched
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    recovered = _recover_orphan_running_requests()
+    if recovered:
+        logger.info("recovered %d orphan running request(s) → failed", recovered)
     worker = get_worker()
     ws_task = asyncio.create_task(run_ws_server(), name="ext-ws-server")
     worker_task = asyncio.create_task(worker.start(), name="request-worker")
@@ -67,6 +91,9 @@ app.include_router(requests_route.router)
 app.include_router(media.bytes_router)
 app.include_router(media.api_router)
 app.include_router(upload.router)
+app.include_router(plans.router)
+app.include_router(vision.router)
+app.include_router(prompt.router)
 
 
 @app.get("/api/health")

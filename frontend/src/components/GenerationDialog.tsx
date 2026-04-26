@@ -1,12 +1,59 @@
 import { useEffect, useRef, useState } from "react";
 import { useGenerationStore } from "../store/generation";
 import { useBoardStore } from "../store/board";
+import { autoPrompt as autoPromptApi, mediaUrl } from "../api/client";
+
+const REF_SOURCE_TYPES = new Set(["character", "image", "visual_asset"]);
+
+// Character builder presets — keep the list short and opinionated. Labels
+// shown to the user; `tag` is the English noun injected into the prompt.
+const CHARACTER_GENDERS = [
+  { key: "male", label: "Nam", tag: "male" },
+  { key: "female", label: "Nữ", tag: "female" },
+] as const;
+
+const CHARACTER_COUNTRIES = [
+  { key: "vn", label: "Việt Nam", tag: "Vietnamese" },
+  { key: "jp", label: "Nhật Bản", tag: "Japanese" },
+  { key: "kr", label: "Hàn Quốc", tag: "Korean" },
+  { key: "cn", label: "Trung Quốc", tag: "Chinese" },
+  { key: "th", label: "Thái Lan", tag: "Thai" },
+  { key: "us", label: "Mỹ", tag: "American" },
+  { key: "fr", label: "Pháp", tag: "French" },
+] as const;
+
+type GenderKey = (typeof CHARACTER_GENDERS)[number]["key"];
+type CountryKey = (typeof CHARACTER_COUNTRIES)[number]["key"];
+
+function buildCharacterPrompt(
+  gender: GenderKey | null,
+  country: CountryKey | null,
+  extras: string,
+): string {
+  const g = CHARACTER_GENDERS.find((x) => x.key === gender)?.tag;
+  const c = CHARACTER_COUNTRIES.find((x) => x.key === country)?.tag;
+  const subject = [c, g].filter(Boolean).join(" ") || "person";
+  const tail = extras.trim();
+  // Anchor the framing hard: full frontal face, both eyes visible, nothing
+  // covering the face, neutral expression. Model used as a downstream
+  // character reference must be consistent across every shot.
+  return [
+    `Studio portrait headshot of a ${subject} character`,
+    tail || null,
+    "looking directly at the camera, full frontal face, both eyes clearly visible",
+    "no glasses, no hat, no mask, no occlusion, nothing covering the face",
+    "neutral closed-mouth expression, head and shoulders framing, centered composition",
+    "sharp focus on face, even softbox lighting, neutral solid grey background",
+    "photorealistic, ultra-detailed, consistent character reference",
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
 
 const IMAGE_ASPECT_RATIOS = [
   { key: "IMAGE_ASPECT_RATIO_SQUARE", label: "1:1" },
-  { key: "IMAGE_ASPECT_RATIO_PORTRAIT", label: "3:4" },
+  { key: "IMAGE_ASPECT_RATIO_PORTRAIT", label: "9:16" },
   { key: "IMAGE_ASPECT_RATIO_LANDSCAPE", label: "16:9" },
-  { key: "IMAGE_ASPECT_RATIO_WIDESCREEN", label: "2.39:1" },
 ] as const;
 
 const VIDEO_ASPECT_RATIOS = [
@@ -29,6 +76,17 @@ export function GenerationDialog() {
   const [paygateTier, setPaygateTier] = useState<"PAYGATE_TIER_ONE" | "PAYGATE_TIER_TWO">(
     "PAYGATE_TIER_ONE",
   );
+  const [variants, setVariants] = useState(1);
+
+  // Character builder state — only used when targetType === "character".
+  const [charGender, setCharGender] = useState<GenderKey | null>(null);
+  const [charCountry, setCharCountry] = useState<CountryKey | null>(null);
+  const [charExtras, setCharExtras] = useState("");
+
+  // Auto-prompt state — set when the user submits an empty prompt and we
+  // synthesise one from upstream context. Surfaced as a small ✨ badge.
+  const [autoBuilding, setAutoBuilding] = useState(false);
+  const [autoPromptUsed, setAutoPromptUsed] = useState(false);
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const firstFocusRef = useRef<HTMLTextAreaElement>(null);
@@ -42,11 +100,27 @@ export function GenerationDialog() {
 
   const targetType = node?.data.type ?? "image";
   const isVideo = targetType === "video";
+  const isCharacter = targetType === "character";
 
   // Find upstream source image for video nodes
   const sourceEdge = isVideo ? edges.find((e) => e.target === rfId) : undefined;
   const sourceNode = sourceEdge ? nodes.find((n) => n.id === sourceEdge.source) : undefined;
   const sourceMediaId = sourceNode?.data.mediaId ?? null;
+
+  // Image nodes: list every upstream node feeding this one as a reference
+  // image (character / image / visual_asset that has a mediaId).
+  const refSourceNodes = !isVideo && rfId
+    ? edges
+        .filter((e) => e.target === rfId)
+        .map((e) => nodes.find((n) => n.id === e.source))
+        .filter(
+          (n): n is NonNullable<typeof n> =>
+            !!n &&
+            REF_SOURCE_TYPES.has(n.data.type) &&
+            typeof n.data.mediaId === "string" &&
+            n.data.mediaId.length > 0,
+        )
+    : [];
 
   // Reset form when dialog opens for a different node
   useEffect(() => {
@@ -54,10 +128,22 @@ export function GenerationDialog() {
       setPrompt(openDialog.prompt);
       const openNode = nodes.find((n) => n.id === rfId);
       const openNodeType = openNode?.data.type ?? "image";
+      // Character → 1:1 portrait headshot is the cleanest default for a
+      // consistent reference. Video → landscape. Image → landscape.
       setAspectRatio(
-        openNodeType === "video" ? "VIDEO_ASPECT_RATIO_LANDSCAPE" : "IMAGE_ASPECT_RATIO_LANDSCAPE",
+        openNodeType === "video"
+          ? "VIDEO_ASPECT_RATIO_LANDSCAPE"
+          : openNodeType === "character"
+          ? "IMAGE_ASPECT_RATIO_SQUARE"
+          : "IMAGE_ASPECT_RATIO_LANDSCAPE",
       );
       setPaygateTier("PAYGATE_TIER_ONE");
+      setVariants(1);
+      setCharGender(null);
+      setCharCountry(null);
+      setCharExtras("");
+      setAutoBuilding(false);
+      setAutoPromptUsed(false);
       triggerRef.current = document.activeElement;
       // Focus textarea on open
       setTimeout(() => firstFocusRef.current?.focus(), 50);
@@ -118,24 +204,71 @@ export function GenerationDialog() {
 
   if (rfId === null) return null;
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (!rfId) return;
+    if (isCharacter) {
+      const built = buildCharacterPrompt(charGender, charCountry, charExtras);
+      dispatchGeneration(rfId, {
+        prompt: built,
+        aspectRatio,
+        paygateTier,
+        variantCount: variants,
+      });
+      closeGenerationDialog();
+      return;
+    }
+    // Image / video branch — if user left the prompt blank, synthesise one
+    // from upstream briefs (composition prompt for image, motion prompt for
+    // video) before dispatching.
+    let finalPrompt = prompt;
+    if (!finalPrompt.trim()) {
+      const dbId = parseInt(rfId, 10);
+      if (isNaN(dbId)) {
+        return;
+      }
+      setAutoBuilding(true);
+      try {
+        const res = await autoPromptApi(dbId);
+        finalPrompt = res.prompt;
+        setPrompt(finalPrompt);
+        setAutoPromptUsed(true);
+      } catch (err) {
+        setAutoBuilding(false);
+        useGenerationStore.setState({
+          error: err instanceof Error
+            ? `Auto-prompt failed: ${err.message}`
+            : "Auto-prompt failed",
+        });
+        return;
+      }
+      setAutoBuilding(false);
+    }
     if (isVideo) {
       dispatchGeneration(rfId, {
-        prompt,
+        prompt: finalPrompt,
         aspectRatio,
         paygateTier,
         kind: "video",
         sourceMediaId: sourceMediaId ?? undefined,
       });
     } else {
-      dispatchGeneration(rfId, { prompt, aspectRatio, paygateTier });
+      dispatchGeneration(rfId, {
+        prompt: finalPrompt,
+        aspectRatio,
+        paygateTier,
+        variantCount: variants,
+      });
     }
     closeGenerationDialog();
   }
 
-  const canGenerate =
-    prompt.trim().length > 0 && (!isVideo || sourceMediaId !== null);
+  // Both image and video allow empty prompt — we'll auto-synth on submit.
+  // Video still needs a connected source image.
+  const canGenerate = isCharacter
+    ? charGender !== null || charCountry !== null || charExtras.trim().length > 0
+    : isVideo
+    ? sourceMediaId !== null && !autoBuilding
+    : !autoBuilding;
 
   return (
     <div
@@ -156,7 +289,11 @@ export function GenerationDialog() {
         <div className="gen-dialog__header">
           <div>
             <h2 id="gen-dialog-title" className="gen-dialog__title">
-              {isVideo ? "Generate video" : "Generate image"}
+              {isVideo
+                ? "Generate video"
+                : isCharacter
+                ? "Generate character"
+                : "Generate image"}
             </h2>
             <span className="gen-dialog__subtitle">
               Node #{node?.data.shortId ?? rfId}
@@ -171,43 +308,147 @@ export function GenerationDialog() {
           </button>
         </div>
 
-        {/* Prompt */}
-        <div className="gen-dialog__field">
-          <div className="gen-dialog__label-row">
-            <label className="gen-dialog__label" htmlFor="gen-prompt">
-              {isVideo ? "Motion prompt" : "Prompt"}
-            </label>
-            <span className="gen-dialog__char-count">{prompt.length}/500</span>
+        {/* Prompt — hidden when character mode shows the builder instead */}
+        {!isCharacter && (
+          <div className="gen-dialog__field">
+            <div className="gen-dialog__label-row">
+              <label className="gen-dialog__label" htmlFor="gen-prompt">
+                {isVideo ? "Motion prompt" : "Prompt"}
+                {autoPromptUsed && (
+                  <span className="gen-dialog__auto-badge" title="Auto-generated from upstream nodes">
+                    ✨ auto
+                  </span>
+                )}
+              </label>
+              <span className="gen-dialog__char-count">{prompt.length}/500</span>
+            </div>
+            <textarea
+              id="gen-prompt"
+              ref={firstFocusRef}
+              className="gen-dialog__textarea"
+              rows={5}
+              maxLength={500}
+              value={prompt}
+              onChange={(e) => {
+                setPrompt(e.target.value);
+                if (autoPromptUsed) setAutoPromptUsed(false);
+              }}
+              placeholder={
+                isVideo
+                  ? "Bỏ trống để tự sinh motion prompt từ source image ✨"
+                  : "Bỏ trống để tự generate prompt từ upstream nodes ✨"
+              }
+              disabled={autoBuilding}
+            />
+            {autoBuilding && (
+              <p className="gen-dialog__hint">✨ Đang dựng prompt từ upstream context…</p>
+            )}
           </div>
-          <textarea
-            id="gen-prompt"
-            ref={firstFocusRef}
-            className="gen-dialog__textarea"
-            rows={5}
-            maxLength={500}
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder={
-              isVideo
-                ? "Describe the motion you want to generate…"
-                : "Describe the image you want to generate…"
-            }
-          />
-        </div>
+        )}
 
-        {/* Source image (video only) */}
+        {/* Character builder (character node only) */}
+        {isCharacter && (
+          <>
+            <div className="gen-dialog__field">
+              <span className="gen-dialog__label">Gender</span>
+              <div className="aspect-chip-row">
+                {CHARACTER_GENDERS.map((g) => (
+                  <button
+                    key={g.key}
+                    type="button"
+                    className={`aspect-chip${charGender === g.key ? " aspect-chip--active" : ""}`}
+                    onClick={() => setCharGender(charGender === g.key ? null : g.key)}
+                  >
+                    {g.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="gen-dialog__field">
+              <span className="gen-dialog__label">Quốc gia</span>
+              <div className="aspect-chip-row">
+                {CHARACTER_COUNTRIES.map((c) => (
+                  <button
+                    key={c.key}
+                    type="button"
+                    className={`aspect-chip${charCountry === c.key ? " aspect-chip--active" : ""}`}
+                    onClick={() => setCharCountry(charCountry === c.key ? null : c.key)}
+                  >
+                    {c.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="gen-dialog__field">
+              <div className="gen-dialog__label-row">
+                <label className="gen-dialog__label" htmlFor="gen-char-extras">
+                  Mô tả thêm (tuỳ chọn)
+                </label>
+                <span className="gen-dialog__char-count">{charExtras.length}/200</span>
+              </div>
+              <textarea
+                id="gen-char-extras"
+                ref={firstFocusRef}
+                className="gen-dialog__textarea"
+                rows={3}
+                maxLength={200}
+                value={charExtras}
+                onChange={(e) => setCharExtras(e.target.value)}
+                placeholder="Tuổi, kiểu tóc, trang phục, biểu cảm…"
+              />
+              <p className="gen-dialog__hint">
+                Prompt được auto-build: portrait headshot · neutral background ·
+                photorealistic — tối ưu cho character reference.
+              </p>
+            </div>
+          </>
+        )}
+
+        {/* Source image (video only — i2v, single image input) */}
         {isVideo && (
           <div className="gen-dialog__field">
             <span className="gen-dialog__label">Source image</span>
             {sourceMediaId && sourceNode ? (
               <div className="source-image-row">
-                <span>#{sourceNode.data.shortId} — mediaId {sourceMediaId.slice(0, 12)}…</span>
+                <img
+                  className="source-image-row__thumb"
+                  src={mediaUrl(sourceMediaId)}
+                  alt={sourceNode.data.title}
+                />
+                <span className="source-image-row__label">
+                  #{sourceNode.data.shortId}
+                </span>
               </div>
             ) : (
               <div className="source-image-row source-image-row--empty">
                 Connect an upstream image node with rendered media first
               </div>
             )}
+          </div>
+        )}
+
+        {/* Reference images (image only) */}
+        {!isVideo && refSourceNodes.length > 0 && (
+          <div className="gen-dialog__field">
+            <span className="gen-dialog__label">
+              Source references ({refSourceNodes.length})
+            </span>
+            <div className="ref-source-row">
+              {refSourceNodes.map((n) => (
+                <div key={n.id} className="ref-source-chip" title={n.data.title}>
+                  <img
+                    className="ref-source-chip__img"
+                    src={mediaUrl(n.data.mediaId as string)}
+                    alt={n.data.title}
+                  />
+                  <span className="ref-source-chip__id">
+                    #{n.data.shortId}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
@@ -247,20 +488,32 @@ export function GenerationDialog() {
           </div>
         </div>
 
-        {/* Variants stepper */}
-        <div className="gen-dialog__field">
-          <span className="gen-dialog__label">Variants</span>
-          <div className="variants-stepper">
-            <button type="button" disabled aria-label="Decrease variants">
-              −
-            </button>
-            <span>1</span>
-            <button type="button" disabled aria-label="Increase variants">
-              +
-            </button>
-            <span className="variants-stepper__hint">multi-variant in later run</span>
+        {/* Variants stepper — image only */}
+        {!isVideo && (
+          <div className="gen-dialog__field">
+            <span className="gen-dialog__label">Variants</span>
+            <div className="variants-stepper">
+              <button
+                type="button"
+                disabled={variants <= 1}
+                aria-label="Decrease variants"
+                onClick={() => setVariants((v) => Math.max(1, v - 1))}
+              >
+                −
+              </button>
+              <span>{variants}</span>
+              <button
+                type="button"
+                disabled={variants >= 4}
+                aria-label="Increase variants"
+                onClick={() => setVariants((v) => Math.min(4, v + 1))}
+              >
+                +
+              </button>
+              <span className="variants-stepper__hint">1–4 images per request</span>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Footer */}
         <div className="gen-dialog__footer">
@@ -273,7 +526,7 @@ export function GenerationDialog() {
             onClick={handleSubmit}
             disabled={!canGenerate}
           >
-            Generate ⌘↵
+            {autoBuilding ? "Building…" : "Generate ⌘↵"}
           </button>
         </div>
       </div>

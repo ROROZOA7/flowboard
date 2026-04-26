@@ -35,7 +35,7 @@ export function getHealth() {
 
 // ── DTOs ────────────────────────────────────────────────────────────────────
 
-export type NodeType = "character" | "image" | "video" | "prompt" | "note";
+export type NodeType = "character" | "image" | "video" | "prompt" | "note" | "visual_asset";
 export type NodeStatus = "idle" | "queued" | "running" | "done" | "error";
 
 export interface Board {
@@ -231,6 +231,29 @@ export function getRequest(id: number) {
   return api<RequestDTO>(`/api/requests/${id}`);
 }
 
+// ── Plans + Pipeline runs ────────────────────────────────────────────────────
+
+export interface PipelineRunDTO {
+  id: number;
+  plan_id: number;
+  status: "pending" | "running" | "done" | "failed";
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+}
+
+export function getPlan(planId: number) {
+  return api<PlanDTO>(`/api/plans/${planId}`);
+}
+
+export function runPlan(planId: number) {
+  return api<PipelineRunDTO>(`/api/plans/${planId}/run`, { method: "POST" });
+}
+
+export function getPipelineRun(runId: number) {
+  return api<PipelineRunDTO>(`/api/pipeline-runs/${runId}`);
+}
+
 // ── Media ────────────────────────────────────────────────────────────────────
 
 export interface MediaStatus {
@@ -270,6 +293,86 @@ export async function uploadImage(
 
   // Don't set Content-Type — the browser sets it with the correct boundary.
   const res = await fetch("/api/upload", { method: "POST", body: form });
+  if (!res.ok) {
+    let detail: unknown;
+    try {
+      detail = await res.json();
+    } catch {
+      detail = await res.text();
+    }
+    const msg =
+      typeof detail === "object" && detail !== null && "detail" in detail
+        ? String((detail as { detail: unknown }).detail)
+        : `${res.status} ${res.statusText}`;
+    throw new Error(msg);
+  }
+  return res.json() as Promise<UploadResponse>;
+}
+
+export interface VisionDescribeResponse {
+  media_id: string;
+  description: string;
+}
+
+export interface AutoPromptResponse {
+  node_id: number;
+  prompt: string;
+}
+
+export async function autoPrompt(nodeId: number): Promise<AutoPromptResponse> {
+  const res = await fetch("/api/prompt/auto", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ node_id: nodeId }),
+  });
+  if (!res.ok) {
+    let detail: unknown;
+    try {
+      detail = await res.json();
+    } catch {
+      detail = await res.text();
+    }
+    const msg =
+      typeof detail === "object" && detail !== null && "detail" in detail
+        ? String((detail as { detail: unknown }).detail)
+        : `${res.status} ${res.statusText}`;
+    throw new Error(msg);
+  }
+  return res.json() as Promise<AutoPromptResponse>;
+}
+
+export async function describeMedia(mediaId: string): Promise<VisionDescribeResponse> {
+  const res = await fetch("/api/vision/describe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ media_id: mediaId }),
+  });
+  if (!res.ok) {
+    let detail: unknown;
+    try {
+      detail = await res.json();
+    } catch {
+      detail = await res.text();
+    }
+    const msg =
+      typeof detail === "object" && detail !== null && "detail" in detail
+        ? String((detail as { detail: unknown }).detail)
+        : `${res.status} ${res.statusText}`;
+    throw new Error(msg);
+  }
+  return res.json() as Promise<VisionDescribeResponse>;
+}
+
+export async function uploadImageFromUrl(
+  url: string,
+  projectId: string,
+  nodeId?: number,
+): Promise<UploadResponse> {
+  const res = await fetch("/api/upload-url", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, project_id: projectId, node_id: nodeId }),
+  });
   if (!res.ok) {
     let detail: unknown;
     try {

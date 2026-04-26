@@ -73,14 +73,27 @@ async def run_claude(
     user_prompt: str,
     *,
     system_prompt: Optional[str] = None,
+    attachments: Optional[list[str]] = None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> str:
     """Invoke ``claude -p PROMPT`` and return the LLM's text result.
 
+    ``attachments``: list of absolute file paths (typically images) to feed
+    the model. Embedded as ``@<path>`` tokens in the prompt — the CLI reads
+    those files and forwards them as multimodal blocks. We never quote the
+    path because it sits inside an argv token (no shell), and we resolve to
+    absolute so a CLI cwd surprise can't break the lookup.
+
     Raises ``ClaudeCliError`` on failure, timeout, or malformed envelope.
     The prompt is passed as a separate argv token — no shell interpolation.
     """
-    args: list[str] = [_CLI_BIN, "-p", user_prompt, "--output-format", "json"]
+    full_prompt = user_prompt
+    if attachments:
+        # `@<path>` syntax handled by the CLI for file attachments.
+        suffix = " ".join(f"@{p}" for p in attachments)
+        full_prompt = f"{user_prompt}\n\n{suffix}" if user_prompt else suffix
+
+    args: list[str] = [_CLI_BIN, "-p", full_prompt, "--output-format", "json"]
     if system_prompt:
         args += ["--append-system-prompt", system_prompt]
 

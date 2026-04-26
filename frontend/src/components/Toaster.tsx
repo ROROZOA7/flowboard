@@ -2,19 +2,28 @@ import { useEffect, useRef } from "react";
 import { useBoardStore } from "../store/board";
 import { useChatStore } from "../store/chat";
 import { useGenerationStore } from "../store/generation";
+import { usePipelineStore } from "../store/pipeline";
 
 export function Toaster() {
   const boardError = useBoardStore((s) => s.error);
   const chatError = useChatStore((s) => s.error);
   const genError = useGenerationStore((s) => s.error);
+  const pipelineError = usePipelineStore((s) => s.error);
   const clearBoardError = useBoardStore((s) => s.clearError);
   const clearChatError = useChatStore((s) => s.clearError);
   const clearGenError = useGenerationStore((s) => s.clearError);
+  const clearPipelineError = usePipelineStore((s) => s.clearError);
 
-  // Priority: chat > generation > board
-  const error = chatError ?? genError ?? boardError;
+  // Priority: chat > pipeline > generation > board
+  const error = chatError ?? pipelineError ?? genError ?? boardError;
   const clearError =
-    chatError !== null ? clearChatError : genError !== null ? clearGenError : clearBoardError;
+    chatError !== null
+      ? clearChatError
+      : pipelineError !== null
+      ? clearPipelineError
+      : genError !== null
+      ? clearGenError
+      : clearBoardError;
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 

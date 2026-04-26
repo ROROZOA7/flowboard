@@ -12,6 +12,7 @@ const CHIPS: Chip[] = [
   { type: "character", icon: "◎", label: "Character" },
   { type: "image", icon: "▣", label: "Image" },
   { type: "video", icon: "▶", label: "Video" },
+  { type: "visual_asset", icon: "◇", label: "Visual asset" },
   { type: "prompt", icon: "✦", label: "Prompt" },
   { type: "note", icon: "✎", label: "Note" },
 ];

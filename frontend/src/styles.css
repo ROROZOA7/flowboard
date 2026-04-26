@@ -315,6 +315,20 @@ button:disabled {
   border-radius: 50% !important;
 }
 
+/* Edge selection — accent stroke + subtle glow so the user can clearly see
+   which edge is selected before pressing Backspace/Delete to remove it. */
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--muted);
+}
+
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:focus .react-flow__edge-path,
+.react-flow__edge:focus-visible .react-flow__edge-path {
+  stroke: var(--accent) !important;
+  stroke-width: 3 !important;
+  filter: drop-shadow(0 0 4px rgba(124, 92, 255, 0.5));
+}
+
 /* Body slots */
 
 .node-body {
@@ -391,6 +405,118 @@ button:disabled {
   word-break: break-word;
 }
 
+/* AI vision brief — small caption shown under ref-style nodes (character /
+   visual_asset) summarising what the image actually contains. Two lines
+   max with ellipsis; full text in tooltip. */
+.brief-hint {
+  margin: 6px 0 0;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.brief-hint--pending {
+  font-style: italic;
+  opacity: 0.7;
+}
+
+.character-drop__generate {
+  align-self: center;
+  margin-top: 4px;
+  font-size: 11px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--fg);
+  cursor: pointer;
+}
+.character-drop__generate:hover {
+  border-color: var(--accent);
+}
+
+/* Keep the character body at a consistent height regardless of state
+   (empty action bar vs. filled avatar) so the node card doesn't change
+   size when the user uploads / generates. */
+.node-body--character {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  min-height: 120px;
+}
+
+/* Empty-state action bar — same visual language as visual_asset. */
+.character-empty {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 96px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--panel-high);
+  transition: border-color 80ms linear, background-color 80ms linear;
+}
+.character-empty--over {
+  border-color: var(--accent);
+  background: rgba(110, 168, 254, 0.08);
+}
+.character-empty--processing {
+  position: relative;
+  overflow: hidden;
+}
+.character-empty--processing::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(110, 168, 254, 0.18) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+/* Filled-state avatar — centered circle showing the character image. */
+.character-avatar {
+  position: relative;
+  align-self: center;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  overflow: hidden;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--panel-high);
+  transition: border-color 80ms linear;
+}
+.character-avatar:hover,
+.character-avatar:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+.character-avatar--over {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(110, 168, 254, 0.25);
+}
+.character-avatar--uploading {
+  pointer-events: none;
+  opacity: 0.7;
+}
+.character-avatar__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 .node-description {
   font-size: 12px;
   color: var(--muted);
@@ -410,11 +536,331 @@ button:disabled {
   gap: 4px;
 }
 
+.thumbnail-grid--1 {
+  grid-template-columns: 1fr;
+}
+
+.thumbnail-grid--2 {
+  grid-template-columns: 1fr 1fr;
+}
+
+.thumbnail-grid--3,
+.thumbnail-grid--4 {
+  grid-template-columns: 1fr 1fr;
+}
+
 .thumbnail-tile {
+  position: relative;
   height: 48px;
   border-radius: 6px;
   background: linear-gradient(135deg, var(--panel-high), var(--panel-higher));
   border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.thumbnail-grid--1 .thumbnail-tile {
+  height: 96px;
+}
+
+.thumbnail-tile--filled {
+  background: var(--panel);
+  cursor: default;
+}
+
+.thumbnail-tile--clickable {
+  cursor: pointer;
+  transition: border-color 80ms linear, transform 80ms linear;
+}
+
+.thumbnail-tile--clickable:hover,
+.thumbnail-tile--clickable:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.thumbnail-tile--active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.thumbnail-tile__placeholder {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, var(--panel-high), var(--panel-higher));
+}
+
+.thumbnail-tile__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Single-tile preview shows the full image at native ratio. Drop the fixed
+   96px tile height and let the image's intrinsic aspect drive the layout once
+   it loads. While there's no media yet, fall back to a 16:9 placeholder box
+   so the empty image node has the same visual footprint as the video node. */
+.thumbnail-grid--1 .thumbnail-tile {
+  height: auto;
+  background: var(--panel-high);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.thumbnail-grid--1 .thumbnail-tile:not(.thumbnail-tile--filled) {
+  aspect-ratio: 16 / 9;
+}
+
+.thumbnail-grid--1 .thumbnail-tile__placeholder {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+}
+
+.thumbnail-grid--1 .thumbnail-tile__img {
+  position: relative;
+  width: 100%;
+  height: auto;
+  max-height: 320px;
+  object-fit: contain;
+}
+
+.thumbnail-tile__icon {
+  font-size: 18px;
+  color: var(--muted);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.thumbnail-grid--2 .thumbnail-tile__icon,
+.thumbnail-grid--3 .thumbnail-tile__icon,
+.thumbnail-grid--4 .thumbnail-tile__icon {
+  font-size: 12px;
+}
+
+.thumbnail-tile--processing::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(110, 168, 254, 0.18) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.video-placeholder--error {
+  border-color: #ef4444;
+}
+
+.node-error {
+  margin: 4px 0 0 0;
+  font-size: 11px;
+  color: #ef4444;
+  word-break: break-word;
+}
+
+.video-placeholder--processing::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(110, 168, 254, 0.18) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Visual asset */
+
+.node-body--visual-asset {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.visual-asset__empty {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  height: 64px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--panel-high);
+}
+
+.visual-asset__empty--processing {
+  position: relative;
+  overflow: hidden;
+}
+
+.visual-asset__empty--processing::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(110, 168, 254, 0.18) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+.visual-asset__action {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.visual-asset__action:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.visual-asset__action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.visual-asset__hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.visual-asset__link-row {
+  display: flex;
+  gap: 4px;
+  width: 100%;
+  align-items: center;
+}
+
+.visual-asset__link-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--fg);
+}
+
+.visual-asset__link-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.visual-asset__media {
+  position: relative;
+  display: flex;
+  background: var(--panel-high);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  max-height: 240px;
+}
+
+.visual-asset__image {
+  width: 100%;
+  height: auto;
+  max-height: 240px;
+  object-fit: contain;
+  display: block;
+}
+
+.visual-asset__refine-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.visual-asset__refine-btn:hover {
+  border-color: var(--accent);
+}
+
+.visual-asset__refine-panel {
+  background: var(--panel-high);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.visual-asset__refine-textarea {
+  font-size: 11px;
+  padding: 4px 6px;
+  resize: vertical;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.visual-asset__refine-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.visual-asset__refine-ref,
+.visual-asset__refine-submit {
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.visual-asset__refine-submit {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+
+.visual-asset__refine-submit:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.visual-asset__error {
+  font-size: 10px;
+  color: #ef4444;
+  margin: 0;
+  word-break: break-word;
 }
 
 /* video */
@@ -792,6 +1238,35 @@ button:disabled {
   background: var(--panel-high);
 }
 
+/* Download button — sits to the left of the gen button. Same hover-reveal
+   pattern; visible on card-hover or when the node has rendered media. */
+.node-card__download {
+  position: absolute;
+  top: 8px;
+  right: 60px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+}
+.node-card:hover .node-card__download {
+  opacity: 1;
+}
+.node-card__download:hover {
+  color: var(--text);
+  background: var(--panel-high);
+}
+
 /* ── Generation Dialog ───────────────────────────────────────────────────── */
 
 .gen-dialog-backdrop {
@@ -907,6 +1382,25 @@ button:disabled {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.gen-dialog__hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.gen-dialog__auto-badge {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: rgba(124, 92, 255, 0.15);
+  color: var(--accent);
+  font-weight: 500;
+  letter-spacing: 0.02em;
 }
 
 .aspect-chip {
@@ -1034,46 +1528,50 @@ button:disabled {
   background: var(--panel-higher);
   border: 1px solid var(--border);
   border-radius: 12px;
-  width: 80vw;
-  height: 80vh;
-  max-width: 1120px;
+  width: min(92vw, 1280px);
+  height: min(88vh, 880px);
   display: flex;
   overflow: hidden;
 }
 
 .result-viewer__left {
-  flex: 7;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 24px;
-  gap: 16px;
+  padding: 20px;
+  gap: 12px;
   background: var(--panel);
   border-right: 1px solid var(--border);
 }
 
 .result-viewer__right {
-  flex: 3;
+  flex: 0 0 320px;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 24px 20px;
+  padding: 20px;
   overflow-y: auto;
 }
 
-/* Media placeholder */
+/* Media placeholder — fills the available space and lets `<img>` /
+   `<video>` adapt to ANY aspect ratio (1:1, 9:16, 16:9, 2.39:1, …) via
+   object-fit: contain. No more letterboxing into a fixed CinemaScope box. */
 
 .media-placeholder {
   width: 100%;
-  aspect-ratio: 2.39 / 1;
+  flex: 1 1 auto;
+  min-height: 0;
   background: var(--panel-high);
   border: 1px solid var(--border);
   border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
 }
 
 .media-placeholder__content {
@@ -1335,7 +1833,7 @@ button:disabled {
   z-index: 1;
   width: 100%;
   height: 120px;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 4px;
   background: var(--panel-high);
   display: block;
@@ -1343,16 +1841,23 @@ button:disabled {
 
 /* ── Video node body with media ──────────────────────────────────────────── */
 
+/* While the video is buffering, the placeholder reserves a 16:9 box so the
+   card doesn't collapse. Once `<video>` loads, it drives the parent height
+   from its own intrinsic aspect ratio (no fixed 140px crop / letterbox). */
 .node-body--video-with-media {
-  position: relative;
+  display: flex;
+  flex-direction: column;
 }
 .node-body--video-with-media .video-placeholder {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
 }
 .node-card__thumbnail[data-kind="video"] {
-  height: 140px;
+  height: auto;
+  max-height: 320px;
+  object-fit: contain;
+  background: #000;
 }
 
 /* ── Video in result viewer ──────────────────────────────────────────────── */
@@ -1369,7 +1874,7 @@ button:disabled {
 .source-image-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   padding: 6px 8px;
   border-radius: 6px;
   background: var(--panel-high);
@@ -1379,6 +1884,56 @@ button:disabled {
 .source-image-row--empty {
   color: var(--muted);
   font-style: italic;
+}
+.source-image-row__thumb {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: var(--panel);
+  flex-shrink: 0;
+}
+.source-image-row__label {
+  font-family: ui-monospace, monospace;
+}
+
+/* ── Reference images row (image gen dialog) ──────────────────────────────── */
+
+.ref-source-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ref-source-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 6px;
+  background: var(--panel-high);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+  width: 72px;
+}
+
+.ref-source-chip__img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 4px;
+  display: block;
+  background: var(--panel);
+}
+
+.ref-source-chip__id {
+  font-family: ui-monospace, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 64px;
 }
 
 /* ── Plan Preview Card ───────────────────────────────────────────────────── */

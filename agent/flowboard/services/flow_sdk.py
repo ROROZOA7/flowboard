@@ -48,6 +48,57 @@ VIDEO_MODEL_KEYS: dict[str, dict[str, str]] = {
 # handler boundaries to prevent path traversal into arbitrary API URLs.
 _PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
+# Flow CDN URLs embed the UUID media_id in the path:
+#   https://flow-content.google/video/<UUID>?Expires=...&Signature=...
+# When the polling response omits `metadata.video.mediaId` (it usually does for
+# video — only `mediaGenerationId` which is a base64 protobuf, NOT a UUID),
+# we recover the UUID from the URL exactly like flowkit does.
+_UUID_IN_URL_RE = re.compile(
+    r"/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+    re.IGNORECASE,
+)
+
+
+def _media_id_from_url(url: Optional[str]) -> Optional[str]:
+    if not isinstance(url, str):
+        return None
+    m = _UUID_IN_URL_RE.search(url)
+    return m.group(1) if m else None
+
+
+def _extract_inner_api_error(resp: Any) -> Optional[str]:
+    """Surface a Flow API error if the response envelope indicates one.
+
+    `flow_client.api_request` returns ``{"id", "status", "data"}`` on a
+    completed round-trip even when the underlying call failed — the HTTP
+    status from Google lives on ``resp["status"]`` and the structured error
+    body on ``resp["data"]["error"]``. Top-level ``resp["error"]`` is only
+    set by the client itself for transport-level failures (which we already
+    handle). When ``status >= 400`` or ``data.error.status`` is set, the
+    request must be reported as failed — silently treating an empty
+    ``media_ids`` list as success masked Flow's content-filter rejections
+    (e.g. ``PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED``).
+    """
+    if not isinstance(resp, dict):
+        return None
+    status = resp.get("status")
+    data = resp.get("data") if isinstance(resp.get("data"), dict) else None
+    err = data.get("error") if isinstance(data, dict) else None
+    has_status_err = isinstance(status, int) and status >= 400
+    has_data_err = isinstance(err, dict)
+    if not (has_status_err or has_data_err):
+        return None
+    if has_data_err:
+        reasons: list[str] = []
+        for detail in err.get("details") or []:
+            if isinstance(detail, dict):
+                r = detail.get("reason")
+                if isinstance(r, str) and r:
+                    reasons.append(r)
+        msg = err.get("message") or err.get("status") or "API error"
+        return f"{reasons[0]}: {msg}" if reasons else str(msg)
+    return f"API_{status}"
+
 
 def is_valid_project_id(project_id: str) -> bool:
     return bool(_PROJECT_ID_RE.fullmatch(project_id))
@@ -59,6 +110,10 @@ CAPTCHA_VIDEO = "VIDEO_GENERATION"
 # Default max operations to poll in parallel. Conservative; flowkit passes
 # the full list at once.
 _MAX_VIDEO_OPS = 4
+
+# Image variants per dispatch are capped server-side as defence-in-depth — the
+# UI clamps to 4 too. Any value above this is silently coerced down.
+MAX_VARIANT_COUNT = 4
 
 # Minimal static headers that have worked against labs.google in flowkit.
 _TRPC_HEADERS = {
@@ -168,6 +223,9 @@ class FlowSDK:
         )
         if isinstance(resp, dict) and resp.get("error"):
             return {"raw": resp, "error": resp["error"]}
+        inner_err = _extract_inner_api_error(resp)
+        if inner_err:
+            return {"raw": resp, "error": inner_err}
 
         op_names = extract_operation_names(resp)
         if not op_names:
@@ -205,26 +263,105 @@ class FlowSDK:
         project_id: str,
         aspect_ratio: str = "IMAGE_ASPECT_RATIO_LANDSCAPE",
         paygate_tier: str = "PAYGATE_TIER_ONE",
-        character_media_ids: Optional[list[str]] = None,
+        ref_media_ids: Optional[list[str]] = None,
+        variant_count: int = 1,
+        character_media_ids: Optional[list[str]] = None,  # legacy alias
     ) -> dict[str, Any]:
-        """Generate one image. When ``character_media_ids`` is provided, the
-        request is augmented with ``imageInputs`` so Flow conditions the result
-        on those character references (mirrors flowkit's edit_image flow).
+        """Generate ``variant_count`` images (1-4). When ``ref_media_ids`` is
+        provided, every request item is augmented with ``imageInputs`` so Flow
+        conditions the result on those upstream images (any combination of
+        character / image / visual_asset upstream nodes — all become
+        ``IMAGE_INPUT_TYPE_REFERENCE`` inputs).
+
+        Multiple variants are produced by replicating the request item with
+        distinct seeds — Flow returns one entry in ``data.media[]`` per
+        request item.
+        """
+        n = max(1, min(int(variant_count), MAX_VARIANT_COUNT))
+        ts = int(time.time() * 1000)
+        ctx = _client_context(project_id, paygate_tier)
+        # Accept the legacy `character_media_ids` kwarg as a fallback.
+        merged_refs = ref_media_ids if ref_media_ids is not None else character_media_ids
+        image_inputs = None
+        if merged_refs:
+            image_inputs = [
+                {"name": mid, "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE"}
+                for mid in merged_refs
+            ]
+
+        requests_arr: list[dict[str, Any]] = []
+        for i in range(n):
+            seed = (ts + i * 9973) % 1_000_000  # any deterministic spread is fine
+            item: dict[str, Any] = {
+                "clientContext": {**ctx, "sessionId": f";{ts + i}"},
+                "seed": seed,
+                "structuredPrompt": {"parts": [{"text": prompt}]},
+                "imageAspectRatio": aspect_ratio,
+                "imageModelName": IMAGE_MODEL_NAME,
+            }
+            if image_inputs is not None:
+                item["imageInputs"] = list(image_inputs)
+            requests_arr.append(item)
+
+        body = {
+            "clientContext": ctx,
+            "mediaGenerationContext": {"batchId": str(uuid.uuid4())},
+            "useNewMedia": True,
+            "requests": requests_arr,
+        }
+
+        resp = await self._client.api_request(
+            url=_generate_images_url(project_id),
+            method="POST",
+            headers=dict(_API_HEADERS),
+            body=body,
+            captcha_action=CAPTCHA_IMAGE,
+        )
+        if isinstance(resp, dict) and resp.get("error"):
+            return {"raw": resp, "error": resp["error"]}
+        inner_err = _extract_inner_api_error(resp)
+        if inner_err:
+            return {"raw": resp, "error": inner_err}
+
+        entries = extract_media_entries(resp)
+        media_ids = [e["media_id"] for e in entries]
+        return {"raw": resp, "media_ids": media_ids, "media_entries": entries}
+
+    # ── image refine (edit_image) ──────────────────────────────────────────
+    async def edit_image(
+        self,
+        prompt: str,
+        project_id: str,
+        source_media_id: str,
+        ref_media_ids: Optional[list[str]] = None,
+        aspect_ratio: str = "IMAGE_ASPECT_RATIO_LANDSCAPE",
+        paygate_tier: str = "PAYGATE_TIER_ONE",
+    ) -> dict[str, Any]:
+        """Refine an existing image with an optional list of reference media.
+
+        Order of ``imageInputs`` matters — flowkit puts BASE_IMAGE first so
+        Flow knows which is the canonical source.
         """
         ts = int(time.time() * 1000)
         ctx = _client_context(project_id, paygate_tier)
-        request_item: dict[str, Any] = {
+
+        image_inputs: list[dict[str, Any]] = [
+            {"name": source_media_id, "imageInputType": "IMAGE_INPUT_TYPE_BASE_IMAGE"}
+        ]
+        for mid in ref_media_ids or []:
+            if isinstance(mid, str) and mid:
+                image_inputs.append(
+                    {"name": mid, "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE"}
+                )
+
+        request_item = {
             "clientContext": {**ctx, "sessionId": f";{ts}"},
             "seed": ts % 1_000_000,
             "structuredPrompt": {"parts": [{"text": prompt}]},
             "imageAspectRatio": aspect_ratio,
             "imageModelName": IMAGE_MODEL_NAME,
+            "imageInputs": image_inputs,
         }
-        if character_media_ids:
-            request_item["imageInputs"] = [
-                {"name": mid, "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE"}
-                for mid in character_media_ids
-            ]
         body = {
             "clientContext": ctx,
             "mediaGenerationContext": {"batchId": str(uuid.uuid4())},
@@ -241,6 +378,9 @@ class FlowSDK:
         )
         if isinstance(resp, dict) and resp.get("error"):
             return {"raw": resp, "error": resp["error"]}
+        inner_err = _extract_inner_api_error(resp)
+        if inner_err:
+            return {"raw": resp, "error": inner_err}
 
         entries = extract_media_entries(resp)
         media_ids = [e["media_id"] for e in entries]
@@ -340,6 +480,18 @@ def extract_video_operations(
 ) -> list[dict[str, Any]]:
     """Summarise a ``batchCheckAsync`` response.
 
+    Flow's response shape is::
+
+        {"data": {"operations": [{
+            "status": "MEDIA_GENERATION_STATUS_{PENDING,SUCCESSFUL,FAILED}",
+            "operation": {"name": "<id>", "metadata": {"video": {
+                "mediaId": "<uuid>", "fifeUrl": "https://flow-content..."
+            }}}
+        }]}}
+
+    flowkit treats ``MEDIA_GENERATION_STATUS_SUCCESSFUL`` as terminal-success;
+    we mirror that.
+
     Returns one entry per *requested* operation name, in order. Missing
     operations are reported as ``done=False`` so the caller can keep polling.
     """
@@ -360,9 +512,41 @@ def extract_video_operations(
                     video_meta = meta.get("video") if isinstance(meta.get("video"), dict) else {}
                     media_id = video_meta.get("mediaId") if isinstance(video_meta, dict) else None
                     fife = video_meta.get("fifeUrl") if isinstance(video_meta, dict) else None
-                    done_flag = bool(inner.get("done")) or bool(media_id and fife)
+                    # Flow's video poll response usually omits `mediaId` and only
+                    # provides `mediaGenerationId` (base64 protobuf, NOT a UUID).
+                    # The actual UUID is embedded in the `fifeUrl` path. Recover it.
+                    if not (isinstance(media_id, str) and media_id):
+                        recovered = _media_id_from_url(fife if isinstance(fife, str) else None)
+                        if recovered is None and isinstance(video_meta, dict):
+                            recovered = _media_id_from_url(video_meta.get("servingBaseUri"))
+                        if recovered is not None:
+                            media_id = recovered
+                    # Flow puts the status at the *top* of each op envelope,
+                    # not on the inner operation object — bug we hit before.
+                    status = op.get("status") if isinstance(op.get("status"), str) else None
+                    # Per-op terminal failure (e.g. PUBLIC_ERROR_AUDIO_FILTERED).
+                    # Flow puts the error on the inner operation object as
+                    # ``{code, message}``. We surface it so the worker can bail
+                    # instead of polling for the full timeout.
+                    op_err: Optional[str] = None
+                    inner_err = inner.get("error") if isinstance(inner, dict) else None
+                    if isinstance(inner_err, dict):
+                        msg = inner_err.get("message") or inner_err.get("status") or "operation_failed"
+                        op_err = str(msg)
+                    if status == "MEDIA_GENERATION_STATUS_FAILED" and op_err is None:
+                        op_err = "MEDIA_GENERATION_STATUS_FAILED"
+                    done_flag = (
+                        status == "MEDIA_GENERATION_STATUS_SUCCESSFUL"
+                        or status == "MEDIA_GENERATION_STATUS_FAILED"
+                        or bool(inner.get("done"))
+                        or bool(media_id and fife)
+                    )
                     entries = []
-                    if done_flag and isinstance(media_id, str):
+                    if (
+                        done_flag
+                        and op_err is None
+                        and isinstance(media_id, str)
+                    ):
                         entries.append(
                             {
                                 "media_id": media_id,
@@ -374,6 +558,8 @@ def extract_video_operations(
                         "name": name,
                         "done": done_flag,
                         "media_entries": entries,
+                        "status": status,
+                        "error": op_err,
                     }
 
     out: list[dict[str, Any]] = []

@@ -8,6 +8,7 @@ import {
 } from "react";
 import { useBoardStore } from "../store/board";
 import { useChatStore } from "../store/chat";
+import { usePipelineStore } from "../store/pipeline";
 import type { ChatMessageDTO, PlanDTO } from "../api/client";
 
 // ── Glyph map (same as NodeCard) ──────────────────────────────────────────────
@@ -29,6 +30,9 @@ function PlanPreviewCard({ plan }: { plan: PlanDTO }) {
   const dotCount = Math.min(nodeCount, MAX_DOTS);
   const overflow = nodeCount > MAX_DOTS ? nodeCount - MAX_DOTS : 0;
 
+  const activeRun = usePipelineStore((s) => s.activeRun);
+  const startRun = usePipelineStore((s) => s.startRun);
+
   const dots: JSX.Element[] = [];
   for (let i = 0; i < dotCount; i++) {
     dots.push(
@@ -48,6 +52,18 @@ function PlanPreviewCard({ plan }: { plan: PlanDTO }) {
     ...(plan.spec.layout_hint ? [plan.spec.layout_hint] : []),
   ].join(" · ");
 
+  const isThisPlanRunning = activeRun?.plan_id === plan.id;
+  const otherPlanRunning = activeRun !== null && !isThisPlanRunning;
+  const alreadyExecuted = plan.status === "done" || plan.status === "running";
+
+  let runLabel: string;
+  if (isThisPlanRunning) runLabel = activeRun?.status === "pending" ? "Queued…" : "Running…";
+  else if (plan.status === "done") runLabel = "Done";
+  else if (plan.status === "failed") runLabel = "Failed";
+  else runLabel = "Run";
+
+  const disabled = isThisPlanRunning || otherPlanRunning || alreadyExecuted;
+
   return (
     <div className="plan-preview-card">
       <div className="plan-preview-card__title">Pipeline proposed</div>
@@ -61,10 +77,19 @@ function PlanPreviewCard({ plan }: { plan: PlanDTO }) {
       <div className="plan-preview-card__actions">
         <button
           className="plan-preview-card__review-btn"
-          disabled
-          title="Ghost-node review lands in Run 8"
+          disabled={disabled}
+          onClick={() => {
+            if (!disabled) startRun(plan.id);
+          }}
+          title={
+            otherPlanRunning
+              ? "Another plan is currently running"
+              : alreadyExecuted
+              ? "This plan has already been executed"
+              : "Materialise plan onto canvas and run generation"
+          }
         >
-          Review
+          {runLabel}
         </button>
       </div>
     </div>

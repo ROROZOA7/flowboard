@@ -82,19 +82,27 @@ async def _handle_gen_image(params: dict) -> tuple[dict, Optional[str]]:
         return {}, "invalid_project_id"
     aspect = params.get("aspect_ratio") or "IMAGE_ASPECT_RATIO_LANDSCAPE"
     tier = params.get("paygate_tier") or "PAYGATE_TIER_ONE"
-    raw_char_ids = params.get("character_media_ids")
-    char_media_ids: Optional[list[str]] = None
-    if isinstance(raw_char_ids, list):
-        # Filter to non-empty strings; reject anything else silently rather
-        # than failing the request — character refs are a quality hint.
-        cleaned = [m for m in raw_char_ids if isinstance(m, str) and m]
-        char_media_ids = cleaned or None
+    # `ref_media_ids` is the broader name (any upstream image / character /
+    # visual_asset feeds in as IMAGE_INPUT_TYPE_REFERENCE). Older callers used
+    # `character_media_ids` — accept both.
+    raw_ref_ids = params.get("ref_media_ids")
+    if not isinstance(raw_ref_ids, list):
+        raw_ref_ids = params.get("character_media_ids")
+    ref_media_ids: Optional[list[str]] = None
+    if isinstance(raw_ref_ids, list):
+        cleaned = [m for m in raw_ref_ids if isinstance(m, str) and m]
+        ref_media_ids = cleaned or None
+    raw_count = params.get("variant_count")
+    variant_count = 1
+    if isinstance(raw_count, int) and raw_count > 0:
+        variant_count = raw_count
     resp = await get_flow_sdk().gen_image(
         prompt=prompt.strip(),
         project_id=project_id,
         aspect_ratio=aspect,
         paygate_tier=tier,
-        character_media_ids=char_media_ids,
+        ref_media_ids=ref_media_ids,
+        variant_count=variant_count,
     )
     if resp.get("error"):
         return resp, str(resp["error"])[:200]
@@ -111,9 +119,11 @@ async def _handle_gen_image(params: dict) -> tuple[dict, Optional[str]]:
     return resp, None
 
 
-# Video polling knobs — overridable in tests.
-VIDEO_POLL_INTERVAL_S = 15.0
-VIDEO_POLL_MAX_CYCLES = 20
+# Video polling knobs — overridable in tests. flowkit uses 420s/10s; Flow's
+# video gen routinely takes 4-6 minutes, so 5 minutes is too tight and times
+# out legitimately-finishing operations.
+VIDEO_POLL_INTERVAL_S = 10.0
+VIDEO_POLL_MAX_CYCLES = 42
 
 
 async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
@@ -153,8 +163,13 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
     last_poll: dict = {}
     all_entries: list[dict] = []
     done_by_name: dict[str, bool] = {name: False for name in op_names}
+    op_error: Optional[str] = None
 
-    while poll_attempts < VIDEO_POLL_MAX_CYCLES and not all(done_by_name.values()):
+    while (
+        poll_attempts < VIDEO_POLL_MAX_CYCLES
+        and not all(done_by_name.values())
+        and op_error is None
+    ):
         await asyncio.sleep(VIDEO_POLL_INTERVAL_S)
         poll_attempts += 1
         last_poll = await sdk.check_async(op_names)
@@ -164,10 +179,28 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
             if not isinstance(op, dict):
                 continue
             name = op.get("name")
+            # Per-operation terminal failure (e.g. content filter
+            # PUBLIC_ERROR_AUDIO_FILTERED). Bail immediately rather than
+            # polling for the full 7-min timeout — Flow won't change its mind.
+            err = op.get("error")
+            if isinstance(err, str) and err:
+                op_error = err
+                break
             if op.get("done"):
                 done_by_name[name] = True
                 for e in op.get("media_entries") or []:
                     all_entries.append(e)
+
+    if op_error is not None:
+        return (
+            {
+                "raw_dispatch": dispatch,
+                "last_poll": last_poll,
+                "operation_names": op_names,
+                "done": done_by_name,
+            },
+            op_error,
+        )
 
     if not all(done_by_name.values()):
         return (
@@ -200,11 +233,56 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
     )
 
 
+async def _handle_edit_image(params: dict) -> tuple[dict, Optional[str]]:
+    from flowboard.services.flow_sdk import is_valid_project_id
+
+    prompt = params.get("prompt")
+    project_id = params.get("project_id")
+    source_media_id = params.get("source_media_id") or params.get("sourceMediaId")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return {}, "missing_prompt"
+    if not isinstance(project_id, str) or not project_id.strip():
+        return {}, "missing_project_id"
+    project_id = project_id.strip()
+    if not is_valid_project_id(project_id):
+        return {}, "invalid_project_id"
+    if not isinstance(source_media_id, str) or not source_media_id.strip():
+        return {}, "missing_source_media_id"
+    aspect = params.get("aspect_ratio") or "IMAGE_ASPECT_RATIO_LANDSCAPE"
+    tier = params.get("paygate_tier") or "PAYGATE_TIER_ONE"
+    raw_refs = params.get("ref_media_ids")
+    ref_ids: Optional[list[str]] = None
+    if isinstance(raw_refs, list):
+        cleaned = [m for m in raw_refs if isinstance(m, str) and m]
+        ref_ids = cleaned or None
+
+    resp = await get_flow_sdk().edit_image(
+        prompt=prompt.strip(),
+        project_id=project_id,
+        source_media_id=source_media_id.strip(),
+        ref_media_ids=ref_ids,
+        aspect_ratio=aspect,
+        paygate_tier=tier,
+    )
+    if resp.get("error"):
+        return resp, str(resp["error"])[:200]
+    entries_with_urls = [
+        e for e in (resp.get("media_entries") or []) if isinstance(e, dict) and e.get("url")
+    ]
+    if entries_with_urls:
+        try:
+            media_service.ingest_urls(entries_with_urls)
+        except Exception:  # noqa: BLE001
+            logger.exception("auto-ingest from edit_image response failed")
+    return resp, None
+
+
 _DEFAULT_HANDLERS: dict[str, Handler] = {
     "proxy": _handle_proxy,
     "create_project": _handle_create_project,
     "gen_image": _handle_gen_image,
     "gen_video": _handle_gen_video,
+    "edit_image": _handle_edit_image,
 }
 
 
