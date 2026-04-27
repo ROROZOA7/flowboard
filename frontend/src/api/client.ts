@@ -96,6 +96,10 @@ export function patchBoard(id: number, name: string): Promise<Board> {
   });
 }
 
+export function deleteBoard(id: number): Promise<{ deleted: number }> {
+  return api<{ deleted: number }>(`/api/boards/${id}`, { method: "DELETE" });
+}
+
 export function createNode(input: {
   board_id: number;
   type: NodeType;

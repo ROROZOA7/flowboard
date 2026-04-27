@@ -5,11 +5,13 @@ import {
   createBoard,
   getBoard,
   patchBoard as apiPatchBoard,
+  deleteBoard as apiDeleteBoard,
   createNode,
   patchNode,
   deleteNode,
   createEdge,
   deleteEdge,
+  type Board,
   type NodeType,
 } from "../api/client";
 
@@ -69,6 +71,9 @@ const TYPE_TITLE: Record<NodeType, string> = {
 interface BoardState {
   boardId: number | null;
   boardName: string;
+  // Lightweight summary list rendered by the ProjectSidebar — full node /
+  // edge content lives only on the active board to keep memory bounded.
+  boards: Board[];
   nodes: FlowNode[];
   edges: Edge[];
   loading: boolean;
@@ -76,7 +81,16 @@ interface BoardState {
 
   loadInitialBoard(): Promise<void>;
   refreshBoardState(): Promise<void>;
+  refreshBoardList(): Promise<void>;
   renameBoard(name: string): Promise<void>;
+  // Switch the active board: load detail, replace nodes/edges, reset
+  // poll-state on the generation store.
+  switchBoard(id: number): Promise<void>;
+  // Create a new board, switch to it, return id.
+  createNewBoard(name: string): Promise<number | null>;
+  // Delete a board. If it's the active one, switch to first remaining
+  // board (or create a fresh "Untitled" if list ends up empty).
+  deleteBoardById(id: number): Promise<void>;
 
   // Returns the new node's rfId on success, or null if creation failed.
   // Callers that need to wire up an edge immediately (e.g. drop-popover
@@ -102,6 +116,7 @@ interface BoardState {
 export const useBoardStore = create<BoardState>((set, get) => ({
   boardId: null,
   boardName: "",
+  boards: [],
   nodes: [],
   edges: [],
   loading: false,
@@ -110,10 +125,11 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   async loadInitialBoard() {
     set({ loading: true, error: null });
     try {
-      const boards = await listBoards();
+      let boards = await listBoards();
       let board = boards[0];
       if (!board) {
         board = await createBoard("Untitled");
+        boards = [board];
       }
       const detail = await getBoard(board.id);
 
@@ -145,12 +161,102 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       set({
         boardId: detail.board.id,
         boardName: detail.board.name,
+        boards,
         nodes,
         edges,
         loading: false,
       });
     } catch (err) {
       set({ loading: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  async refreshBoardList() {
+    try {
+      const boards = await listBoards();
+      set({ boards });
+    } catch {
+      // non-fatal
+    }
+  },
+
+  async switchBoard(id) {
+    if (id === get().boardId) return;
+    set({ loading: true, error: null });
+    try {
+      const detail = await getBoard(id);
+      const nodes: FlowNode[] = detail.nodes.map((n) => ({
+        id: String(n.id),
+        type: n.type,
+        position: { x: n.x, y: n.y },
+        data: {
+          type: n.type,
+          shortId: n.short_id,
+          title: (n.data["title"] as string | undefined) ?? TYPE_TITLE[n.type],
+          status: n.status,
+          prompt: n.data["prompt"] as string | undefined,
+          thumbnailUrl: n.data["thumbnailUrl"] as string | undefined,
+          mediaId: n.data["mediaId"] as string | undefined,
+          mediaIds: n.data["mediaIds"] as string[] | undefined,
+          variantCount: n.data["variantCount"] as number | undefined,
+          aspectRatio: n.data["aspectRatio"] as string | undefined,
+          aiBrief: n.data["aiBrief"] as string | undefined,
+        },
+      }));
+      const edges: Edge[] = detail.edges.map((e) => ({
+        id: String(e.id),
+        source: String(e.source_id),
+        target: String(e.target_id),
+      }));
+      set({
+        boardId: detail.board.id,
+        boardName: detail.board.name,
+        nodes,
+        edges,
+        loading: false,
+      });
+    } catch (err) {
+      set({ loading: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  async createNewBoard(name) {
+    try {
+      const board = await createBoard(name || "Untitled");
+      // Add to list (front of list so the newly-created project shows up
+      // at the top of the sidebar) and switch to it.
+      set((s) => ({ boards: [board, ...s.boards] }));
+      await get().switchBoard(board.id);
+      return board.id;
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+      return null;
+    }
+  },
+
+  async deleteBoardById(id) {
+    try {
+      await apiDeleteBoard(id);
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    const remaining = get().boards.filter((b) => b.id !== id);
+    set({ boards: remaining });
+    // If we just deleted the active board, switch to the first remaining
+    // board — or create a fresh "Untitled" if none left.
+    if (get().boardId === id) {
+      if (remaining.length > 0) {
+        await get().switchBoard(remaining[0].id);
+      } else {
+        try {
+          const board = await createBoard("Untitled");
+          set({ boards: [board] });
+          await get().switchBoard(board.id);
+        } catch (err) {
+          set({ error: err instanceof Error ? err.message : String(err) });
+        }
+      }
     }
   },
 
@@ -193,7 +299,12 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     if (boardId === null) return;
     try {
       const updated = await apiPatchBoard(boardId, name);
-      set({ boardName: updated.name });
+      set((s) => ({
+        boardName: updated.name,
+        boards: s.boards.map((b) =>
+          b.id === boardId ? { ...b, name: updated.name } : b,
+        ),
+      }));
     } catch {
       // non-fatal; keep local name
     }

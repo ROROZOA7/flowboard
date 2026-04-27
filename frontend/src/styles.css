@@ -47,9 +47,299 @@ button:disabled {
 
 .app {
   display: grid;
-  grid-template-columns: 1fr 320px;
+  /* Project sidebar (auto-sized; toggles 220 ↔ 44) | canvas
+     Chat sidebar disabled — restore by adding `320px` back here and
+     un-commenting the ChatSidebar import in App.tsx. */
+  grid-template-columns: auto 1fr;
   height: 100vh;
   width: 100vw;
+}
+
+/* ── Project sidebar (left) ─────────────────────────────────────────────── */
+.project-sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 220px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  transition: width 120ms ease;
+  overflow: hidden;
+}
+.project-sidebar--collapsed {
+  width: 44px;
+}
+.project-sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 12px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.project-sidebar__title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.project-sidebar__icon-btn {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+.project-sidebar__icon-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.project-sidebar__new {
+  margin: 8px 10px 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--panel-high);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.project-sidebar__new:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--panel);
+}
+.project-sidebar__list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 6px 12px;
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.project-sidebar__empty {
+  padding: 16px 12px;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: italic;
+}
+.project-sidebar__item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 6px;
+  padding: 0 4px 0 0;
+}
+.project-sidebar__item:hover {
+  background: var(--panel-high);
+}
+.project-sidebar__item--active {
+  background: rgba(124, 92, 255, 0.14);
+}
+.project-sidebar__item--active:hover {
+  background: rgba(124, 92, 255, 0.2);
+}
+.project-sidebar__name {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text);
+  background: none;
+  border: none;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-sidebar__item--active .project-sidebar__name {
+  color: var(--accent);
+  font-weight: 500;
+}
+.project-sidebar__kebab {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  opacity: 0;
+  transition: opacity 80ms ease;
+}
+.project-sidebar__item:hover .project-sidebar__kebab,
+.project-sidebar__item--active .project-sidebar__kebab {
+  opacity: 1;
+}
+.project-sidebar__kebab:hover {
+  color: var(--text);
+  background: var(--panel-higher);
+}
+.project-sidebar__menu {
+  position: absolute;
+  right: 6px;
+  top: calc(100% - 4px);
+  z-index: 60;
+  background: var(--panel-higher);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  overflow: hidden;
+}
+.project-sidebar__menu button {
+  padding: 6px 10px;
+  font-size: 12px;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+}
+.project-sidebar__menu button:hover {
+  background: var(--panel-high);
+}
+.project-sidebar__menu-danger {
+  color: #ef4444 !important;
+}
+.project-sidebar__menu-danger:hover {
+  background: rgba(239, 68, 68, 0.12) !important;
+}
+.project-sidebar__rename-input {
+  flex: 1;
+  margin: 4px 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text);
+  outline: none;
+}
+
+/* ── Project create / delete modal ──────────────────────────────────────── */
+.project-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 240;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: project-modal-fade 100ms ease-out;
+}
+@keyframes project-modal-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.project-modal {
+  width: min(92vw, 420px);
+  background: var(--panel-higher);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 22px 22px 18px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: project-modal-pop 120ms ease-out;
+}
+@keyframes project-modal-pop {
+  from { transform: translateY(-6px) scale(0.98); opacity: 0; }
+  to   { transform: translateY(0) scale(1); opacity: 1; }
+}
+.project-modal__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.project-modal__hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+.project-modal__hint strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.project-modal__input {
+  padding: 8px 12px;
+  font-size: 13px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  outline: none;
+}
+.project-modal__input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(124, 92, 255, 0.18);
+}
+.project-modal__input:disabled {
+  opacity: 0.55;
+}
+.project-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+.project-modal__btn {
+  padding: 7px 16px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-high);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 80ms ease, background 80ms ease;
+}
+.project-modal__btn:hover:not(:disabled) {
+  border-color: var(--muted);
+  background: var(--panel);
+}
+.project-modal__btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.project-modal__btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+.project-modal__btn--primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+.project-modal__btn--danger {
+  background: #ef4444;
+  border-color: #ef4444;
+  color: #fff;
+}
+.project-modal__btn--danger:hover:not(:disabled) {
+  filter: brightness(1.08);
 }
 
 .canvas-wrap {
@@ -1338,65 +1628,52 @@ button:disabled {
   white-space: nowrap;
 }
 
-/* ── Node Generate Button ────────────────────────────────────────────────── */
+/* ── Node Header Action Buttons ─────────────────────────────────────────────
+   The buttons live INSIDE the header flex row, between title and shortId,
+   so they reserve space and never overlap the shortId label even when
+   they're invisible (opacity 0 + pointer-events: none keeps the layout
+   stable). They fade in on hover. */
 
-.node-card__gen {
-  position: absolute;
-  top: 8px;
-  right: 32px;
-  width: 28px;
-  height: 28px;
+.node-header__actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.node-card:hover .node-header__actions,
+.node-header__actions:has(.node-header__btn--running) {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.node-header__btn {
+  width: 22px;
+  height: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 6px;
+  border-radius: 4px;
   font-size: 11px;
   color: var(--muted);
   background: none;
   border: none;
   padding: 0;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+  transition: color 80ms ease, background 80ms ease;
 }
 
-.node-card:hover .node-card__gen,
-.node-card__gen--running {
-  opacity: 1;
-}
-
-.node-card__gen:hover {
+.node-header__btn:hover {
   color: var(--text);
   background: var(--panel-high);
 }
 
-/* Download button — sits to the left of the gen button. Same hover-reveal
-   pattern; visible on card-hover or when the node has rendered media. */
-.node-card__download {
-  position: absolute;
-  top: 8px;
-  right: 60px;
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 6px;
-  font-size: 13px;
-  color: var(--muted);
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
-}
-.node-card:hover .node-card__download {
+/* Running state for the gen button — keep it visible so the user knows a
+   request is in flight even when not hovering the card. */
+.node-header__btn--running {
+  color: var(--accent);
   opacity: 1;
-}
-.node-card__download:hover {
-  color: var(--text);
-  background: var(--panel-high);
 }
 
 /* ── Generation Dialog ───────────────────────────────────────────────────── */

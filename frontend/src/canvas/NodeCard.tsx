@@ -821,31 +821,32 @@ export function NodeCard(props: NodeProps<FlowNode>) {
       <div className="node-header">
         <span className="node-icon" aria-hidden="true">{ICON[data.type] ?? "□"}</span>
         <span className="node-title">{data.title}</span>
+        <div className="node-header__actions">
+          {downloadable && (
+            <button
+              className="node-header__btn"
+              onClick={handleDownload}
+              aria-label="Download media"
+              title="Download"
+              tabIndex={0}
+            >
+              ⬇
+            </button>
+          )}
+          {isGenerable && (
+            <button
+              className={`node-header__btn${isRunning ? " node-header__btn--running" : ""}`}
+              onClick={handleGenerate}
+              aria-label="Generate from this node"
+              title="Generate"
+              tabIndex={0}
+            >
+              ▶
+            </button>
+          )}
+        </div>
         <span className="node-short-id">#{data.shortId}</span>
       </div>
-
-      {isGenerable && (
-        <button
-          className={`node-card__gen${isRunning ? " node-card__gen--running" : ""}`}
-          onClick={handleGenerate}
-          aria-label="Generate from this node"
-          tabIndex={0}
-        >
-          ▶
-        </button>
-      )}
-
-      {downloadable && (
-        <button
-          className="node-card__download"
-          onClick={handleDownload}
-          aria-label="Download media"
-          title="Download"
-          tabIndex={0}
-        >
-          ⬇
-        </button>
-      )}
 
       <NodeBody rfId={props.id} data={data} />
 
