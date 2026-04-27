@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo.png" alt="Flowboard" width="160" />
+  <img src="docs/assets/logo.svg" alt="Flowboard" width="160" />
 </p>
 
 <h1 align="center">Flowboard</h1>
@@ -138,21 +138,23 @@ product, three different worlds:
 
 Camera is locked-off (e-commerce default — keeps the product fully framed
 the whole clip); the model performs a **time-coded 2–3 beat editorial
-pose-shift** within the 8 seconds. Click each thumbnail to play.
+pose-shift** within the 8 seconds. (GitHub renders MP4 inline only when
+hosted on its CDN, so we ship looping GIFs in the README — full-quality
+MP4s live in [`docs/assets/`](docs/assets/).)
 
 <table>
 <tr>
 <td align="center" width="33%">
-  <video src="docs/assets/video-base.mp4" controls width="280"></video><br/>
-  <sub><b>#sncj</b> · studio motion · half-step → glance → hair-tuck</sub>
+  <img src="docs/assets/video-base.gif" alt="Studio motion video" width="280" /><br/>
+  <sub><b>#sncj</b> · studio motion · half-step → glance → hair-tuck<br/><a href="docs/assets/video-base.mp4">▶ MP4</a></sub>
 </td>
 <td align="center" width="33%">
-  <video src="docs/assets/video-autumn.mp4" controls width="280"></video><br/>
-  <sub><b>#bwr4</b> · autumn road · pivot → pocket → camera smirk</sub>
+  <img src="docs/assets/video-autumn.gif" alt="Autumn motion video" width="280" /><br/>
+  <sub><b>#bwr4</b> · autumn road · pivot → pocket → camera smirk<br/><a href="docs/assets/video-autumn.mp4">▶ MP4</a></sub>
 </td>
 <td align="center" width="33%">
-  <video src="docs/assets/video-seoul.mp4" controls width="280"></video><br/>
-  <sub><b>#uv1p</b> · Seoul daylight · half-step → over-shoulder glance → hand in pocket</sub>
+  <img src="docs/assets/video-seoul.gif" alt="Seoul motion video" width="280" /><br/>
+  <sub><b>#uv1p</b> · Seoul daylight · half-step → over-shoulder glance → hand in pocket<br/><a href="docs/assets/video-seoul.mp4">▶ MP4</a></sub>
 </td>
 </tr>
 </table>
