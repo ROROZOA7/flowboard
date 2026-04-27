@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" alt="Flowboard" width="480" />
+  <img src="docs/assets/logo-wordmark.svg" alt="Flowboard" width="480" />
 </p>
 
 <p align="center">
@@ -12,6 +12,7 @@
   <img src="https://img.shields.io/badge/React%20Flow-12-8A2BE2?logo=react&logoColor=white" alt="React Flow"/>
   <img src="https://img.shields.io/badge/Chrome-MV3-4285F4?logo=googlechrome&logoColor=white" alt="Chrome MV3"/>
   <img src="https://img.shields.io/badge/Veo%203.1-i2v-FF6F00?logo=google&logoColor=white" alt="Veo 3.1"/>
+  <img src="https://img.shields.io/badge/Flow-Pro%20%2F%20Ultra%20only-EA4335?logo=google&logoColor=white" alt="Flow Pro / Ultra only"/>
   <img src="https://img.shields.io/badge/Claude-CLI%20only-D97757?logo=anthropic&logoColor=white" alt="Claude CLI only"/>
   <img src="https://img.shields.io/badge/Tests-190%20passing-success?logo=pytest&logoColor=white" alt="190 passing"/>
   <img src="https://img.shields.io/badge/Status-personal%20local--only-orange" alt="Status"/>
@@ -23,11 +24,23 @@
   Every node is reusable, every edge is a real data-dependency, every variant is independently regenerable.
 </p>
 
-> **🔑 No API keys.** Auto-prompt + vision rely **only** on the
-> [**Claude CLI**](https://docs.claude.com/claude-code/install) shelled
-> out as a local subprocess — Flowboard does not use the Anthropic API,
-> OpenAI, Gemini, or any cloud LLM endpoint. Your existing Claude
-> subscription does the work; Flow does the pixels.
+> **⚠ Hard requirements — read this before cloning:**
+>
+> 1. **Google Flow plan: `Pro` or `Ultra` only.** Veo 3.1 i2v + GEM_PIX_2
+>    are gated to paid tiers. The free tier and trial accounts cannot
+>    drive video generation, so Flowboard cannot work on them. Confirm
+>    your plan at [labs.google/fx](https://labs.google/fx/tools/flow)
+>    before installing.
+> 2. **Chrome extension is mandatory.** All generation requests are
+>    proxied through `extension/` (Chrome MV3) so the agent can ride
+>    your authenticated Flow session + reCAPTCHA token. Without the
+>    extension loaded and connected to `labs.google/fx/tools/flow`, the
+>    `▶ Generate` button does nothing.
+> 3. **Claude CLI subprocess only.** Auto-prompt + vision rely **only**
+>    on the [**Claude CLI**](https://docs.claude.com/claude-code/install)
+>    shelled out as a local subprocess — Flowboard does not use the
+>    Anthropic API, OpenAI, Gemini, or any cloud LLM endpoint. Your
+>    existing Claude subscription does the work.
 
 <p align="center">
   <a href="#why">Why</a> ·
@@ -306,9 +319,9 @@ matching vocab from the system prompt.
 |------------|-----|
 | **Python 3.11** | Agent runtime (FastAPI + SQLModel) |
 | **Node 20+** | Frontend dev server (Vite) |
-| **Chrome / Chromium** | Hosts the MV3 extension that proxies Google Flow API calls |
+| **Chrome / Chromium** | **Mandatory** — hosts the MV3 extension that proxies every Google Flow API call. The agent has zero direct path to Flow without it. |
 | **Claude CLI** on `PATH` | Vision describe + auto-prompt synth (no API key — uses your existing Claude subscription). [Install](https://docs.claude.com/claude-code/install) |
-| **Google account** with access to [`labs.google/fx/tools/flow`](https://labs.google/fx/tools/flow) | Generation credits (Tier-One free or Tier-Two paid) |
+| **Google Flow `Pro` or `Ultra` plan** at [`labs.google/fx/tools/flow`](https://labs.google/fx/tools/flow) | **Free tier and trial accounts will not work.** Veo 3.1 i2v + GEM_PIX_2 image gen are gated to paid plans. |
 
 > **Windows:** Use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install). All commands assume a Unix shell.
 
@@ -465,9 +478,16 @@ storage/                Local cache + SQLite (gitignored)
 Personal local-only tool. **190 / 190 tests passing** (agent), tsc
 clean (frontend). Caveats:
 
+- ⚠ **Google Flow plan must be `Pro` or `Ultra`.** Free tier and trial
+  accounts have no access to Veo 3.1 i2v / GEM_PIX_2 — every generation
+  call will fail.
+- ⚠ **Chrome extension must be loaded and connected.** The agent does
+  not talk to Flow directly — all i2v / image / edit requests are
+  proxied through `extension/` over a localhost WebSocket. No
+  extension → no generation.
 - ⚠ HMAC-secured WS (`X-Callback-Secret` per agent boot) — single
   loopback only, not multi-user.
-- ⚠ Google Flow rate limits (Tier-One free; Tier-Two paid).
+- ⚠ Google Flow rate limits still apply within your paid tier.
 - ⚠ Veo / Imagen content filters
   (`PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED`,
   `PUBLIC_ERROR_AUDIO_FILTERED`) — surfaced verbatim in the
