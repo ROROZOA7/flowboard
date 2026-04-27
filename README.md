@@ -75,6 +75,11 @@ nodes (`#op4v` product, `#0p1u` model) feeding three scene compositions
 and three downstream videos. Every image and clip below was rendered by
 the pipeline in this repo.
 
+<p align="center">
+  <img src="docs/assets/canvas-overview.png" alt="Flowboard canvas — real board export" width="100%" /><br/>
+  <sub>The actual canvas in the app: 2 refs (left) → studio composition <code>#qowj</code> (centre) → scene-variant images (autumn / Seoul / Myeongdong) → 3 video nodes with 4-up i2v variant grids (right).</sub>
+</p>
+
 ```mermaid
 graph LR
     A[#op4v Visual asset<br/>cream The Famous tee]:::ref
