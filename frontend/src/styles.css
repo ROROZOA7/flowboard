@@ -1346,6 +1346,40 @@ button:disabled {
   -webkit-box-orient: vertical;
 }
 
+/* Editor for prompt + note nodes (double-click to enter, blur / Cmd+Enter
+   to save, Esc to cancel). Mirrors the read-only text styles so the
+   transition feels in-place. */
+
+.prompt-editor,
+.note-editor {
+  width: 100%;
+  min-height: 80px;
+  resize: vertical;
+  padding: 6px 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  outline: none;
+  box-sizing: border-box;
+}
+
+.prompt-editor:focus,
+.note-editor:focus {
+  border-color: var(--accent);
+}
+
+.prompt-editor {
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  line-height: 1.6;
+}
+
+.note-editor {
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 /* ── Toaster ─────────────────────────────────────────────────────────────────── */
 
 .toaster {

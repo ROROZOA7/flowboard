@@ -58,42 +58,102 @@ _SYNTH_SYSTEM_IMAGE = (
     "prompt only."
 )
 
-# Shared core: scene-aware vocabulary, anti-freeze anchor, beat structure.
-# Composed into both DEFAULT and STATIC variants below — only the camera
-# clause differs.
+# Appended to the image system prompt when the upstream graph contains
+# 2+ distinct people (multiple character nodes, or image siblings each
+# wrapping a different character grandparent — e.g. couple shots, group
+# look-books). Without this clause the synthesiser writes a single-subject
+# prompt and Flow can only honour one of the N reference images.
+_MULTI_SUBJECT_CLAUSE = (
+    "\n\nMULTI-SUBJECT MODE — CRITICAL: This shot contains MULTIPLE "
+    "distinct people. The upstream context lists every subject with their "
+    "#shortId. Compose ALL subjects into a single couple/group scene "
+    "where every person appears in frame:\n"
+    "  • REFERENCE BY SHORTID: name each subject by their #shortId in the "
+    "prompt (e.g. '#uv50 standing on the left, #zryx on the right') so "
+    "Flow knows which input image maps to which subject. NEVER replace "
+    "shortIds with generic descriptors like 'an East Asian man'.\n"
+    "  • ARRANGEMENT: side-by-side, slightly turned toward each other, or "
+    "natural couple/group composition. Every subject must be fully "
+    "visible — no one cropped or hidden behind another.\n"
+    "  • POSE & GAZE rules apply to EACH subject — every face engages the "
+    "camera; every expression neutral closed-mouth.\n"
+    "  • COMPLEMENTARY STANCES: each subject picks a DIFFERENT gesture "
+    "from the stance pool — never repeat the same stance across subjects.\n"
+    "  • CONTACT: light natural couple-style contact is allowed (a hand "
+    "on the other's shoulder, leaning slightly toward each other) but "
+    "never invasive.\n"
+    "  • FRAMING: full upper-body or knees-up framing — wider than a "
+    "single-subject shot — so all faces and any product stay in frame.\n"
+    "  • CHAR LIMIT: up to 400 chars for multi-subject scenes (overrides "
+    "the 280 cap) since each subject needs description."
+)
+
+# Intent-first motion direction. The earlier version prescribed scene→
+# action vocab + mandatory 3-beat structure + action-verb-only language,
+# which made every clip feel theatrical and "model executing a pose pool".
+# This rewrite gives Claude the safety floor (Veo's anti-freeze need) and
+# trusts it to pick natural, character-driven motion that fits the scene
+# instead of rotating through canned gestures.
 _SYNTH_VIDEO_CORE = (
-    "You are a video-motion prompt builder for an image-to-video pipeline "
-    "(8-second clip, Veo-style). The subject is a fashion model "
-    "showcasing a product. The source still is the first frame — you "
-    "must describe what happens AFTER it.\n\n"
-    "ANTI-FREEZE — CRITICAL: Veo i2v tends to lock onto the source pose. "
-    "The subject MUST visibly leave the initial pose by 1-2 seconds — "
-    "posture, hand position, or head angle must clearly differ from "
-    "frame 0. Use ACTION VERBS (steps, turns, glances, tucks, sips), "
-    "NOT adjectives (gentle, subtle, soft).\n\n"
-    "DETECT SCENE from the source still's brief and match motion "
-    "vocabulary to the environment:\n"
-    "  • studio / plain backdrop / neutral bg → editorial poses: turn "
-    "to three-quarter, hand slides to hip, fingers brush the sleeve / "
-    "collar / hem, slow head tilt, engage camera with confident gaze.\n"
-    "  • street / city / sidewalk / urban outdoor → casual lifestyle: "
-    "half-step forward into frame, hair tuck behind ear, glance over "
-    "the shoulder at passing traffic, hand in pocket, confident smirk "
-    "back at camera. NO studio-style hand-on-hip gestures here.\n"
-    "  • café / restaurant / interior → seated motion: lean back, sip "
-    "from a cup, glance toward the window, small wave or hand gesture.\n"
-    "  • beach / park / nature / scenic → ambient motion: hair flutter "
-    "in the breeze, slow exhale, look toward horizon, soft step forward, "
-    "hand brushes fabric.\n\n"
-    "The model MUST perform a SEQUENCE of 2-3 distinct pose changes "
-    "across the 8 seconds. Structure as time-coded beats:\n"
-    "  0-3s: <verb-led action 1>\n"
-    "  3-6s: <verb-led action 2>\n"
-    "  6-8s: <verb-led action 3>\n"
-    "Smooth transitions — no teleports. Match the mood and lighting of "
-    "the source. Add natural blinks and soft fabric breathing "
-    "throughout. Max 360 chars. No scene cuts, no dialogue, no text "
-    "overlays. Output the motion prompt only — no preamble."
+    "You are a video-motion prompt builder for an i2v pipeline (8-second "
+    "clip, Veo-style). The source still is the first frame — describe "
+    "what unfolds across the next 8 seconds.\n\n"
+    "INTENT FIRST. Look at the source: who is this person, what are "
+    "they feeling, what would they naturally do in this moment? Let "
+    "that drive the motion. The subject is a person with interiority, "
+    "not a fashion model executing a pose pool.\n\n"
+    "ANTI-FREEZE (safety floor only): Veo locks onto frame 0 if the "
+    "prompt is too passive. SOMETHING visible must change between "
+    "frame 0 and frame 8 — but it can be as small as a slow exhale, a "
+    "half-blink, a weight shift, a gaze drifting to the lens and back, "
+    "or fabric catching a breeze. What fails is adjective-only "
+    "direction without a concrete change attached: 'gentle softness' "
+    "alone freezes; 'a slow exhale, eyes settling on the lens' doesn't.\n\n"
+    "PERFORMANCE notes — apply when they fit, ignore when they don't:\n"
+    "  • Match the energy of the source. A poised studio portrait "
+    "wants a held gaze with a micro-breath, not a runway pose change. "
+    "A walking street shot wants forward momentum.\n"
+    "  • Stillness is valid. A 6-second held moment with one small "
+    "shift at the end can read more powerful than three beats of "
+    "action stacked.\n"
+    "  • Don't pile gestures. One real motion that carries weight "
+    "beats three checklist gestures.\n"
+    "  • Body language must read as in-character. The choice 'what "
+    "does this person do next' should feel like THEIR choice, not the "
+    "prompt-writer's.\n\n"
+    "STRUCTURE is free. Use time-coded beats (e.g. 0-3s / 3-6s / 6-8s) "
+    "when the scene calls for sequenced action. Use a single continuous "
+    "direction when the scene calls for sustained presence. Pick what "
+    "fits — don't default to either.\n\n"
+    "ALWAYS include: natural blinks throughout, soft fabric and hair "
+    "breathing. These ground the clip without adding theatrical motion.\n\n"
+    "No scene cuts, no dialogue, no text overlays. Max 400 chars. "
+    "Output the motion prompt only — no preamble."
+)
+
+# Appended to the video system prompt when the source frame contains
+# 2+ distinct people (couple/group shots). Without this, the synth
+# directs "the subject" singular and Veo typically freezes one person
+# while animating the other.
+_MULTI_SUBJECT_VIDEO_CLAUSE = (
+    "\n\nMULTI-SUBJECT MODE: The source frame contains MULTIPLE distinct "
+    "people. Direct each subject independently — natural co-presence "
+    "beats synchronized choreography:\n"
+    "  • Each subject performs their own motion. Don't force both/all "
+    "to lean / turn / glance at the same time — that reads staged.\n"
+    "  • Subjects may acknowledge each other: a glance, a soft micro-"
+    "smile (still closed-mouth), light contact (a hand drifting toward "
+    "the other's shoulder, a slight lean toward each other). Or they "
+    "may simply co-exist, each in their own moment. Both are valid.\n"
+    "  • ANTI-FREEZE applies PER SUBJECT: at minimum a blink or breath "
+    "for every person between frame 0 and frame 8. No one frozen while "
+    "another moves.\n"
+    "  • REFERENCE BY SHORTID: when directing actions, name each "
+    "subject by their #shortId (e.g. '#uv50 turns slightly toward "
+    "#zryx; #zryx holds her gaze on the lens'). Never replace shortIds "
+    "with generic descriptors.\n"
+    "  • Char limit bumps to 540 for multi-subject — each person needs "
+    "their own direction."
 )
 
 _SYNTH_SYSTEM_VIDEO_DEFAULT = (
@@ -114,10 +174,14 @@ _SYNTH_SYSTEM_VIDEO_STATIC = (
 )
 
 
-def _video_system_prompt(camera: Optional[str]) -> str:
-    if camera == "static":
-        return _SYNTH_SYSTEM_VIDEO_STATIC
-    return _SYNTH_SYSTEM_VIDEO_DEFAULT
+def _video_system_prompt(camera: Optional[str], subject_count: int = 1) -> str:
+    base = (
+        _SYNTH_SYSTEM_VIDEO_STATIC if camera == "static"
+        else _SYNTH_SYSTEM_VIDEO_DEFAULT
+    )
+    if subject_count >= 2:
+        return base + _MULTI_SUBJECT_VIDEO_CLAUSE
+    return base
 
 
 class PromptSynthError(RuntimeError):
@@ -127,7 +191,13 @@ class PromptSynthError(RuntimeError):
 def _collect_upstream(node_id: int) -> tuple[list[dict], Optional[Node]]:
     """Return (upstream_brief_records, target_node).
 
-    Each record: {type, brief, prompt, has_media}.
+    Each record: {type, shortId, brief, prompt, title, has_media,
+    subject_chars}. ``subject_chars`` is the list of character shortIds
+    one hop further up — only populated for ``image`` records, since an
+    image upstream may "wrap" a character (character → image → image
+    chain). Multi-subject detection counts these grandparent characters
+    so a shot with 2 image siblings each wrapping a different person is
+    correctly identified as a couple/group scene.
     """
     with get_session() as s:
         target = s.get(Node, node_id)
@@ -142,6 +212,13 @@ def _collect_upstream(node_id: int) -> tuple[list[dict], Optional[Node]]:
                 continue
             data = n.data or {}
             brief = data.get("aiBrief")
+            subject_chars: list[str] = []
+            if n.type == "image":
+                gp_edges = s.exec(select(Edge).where(Edge.target_id == uid)).all()
+                for ge in gp_edges:
+                    gp = s.get(Node, ge.source_id)
+                    if gp is not None and gp.type == "character":
+                        subject_chars.append(gp.short_id)
             records.append(
                 {
                     "type": n.type,
@@ -150,9 +227,44 @@ def _collect_upstream(node_id: int) -> tuple[list[dict], Optional[Node]]:
                     "prompt": data.get("prompt") if isinstance(data.get("prompt"), str) else None,
                     "title": data.get("title") if isinstance(data.get("title"), str) else None,
                     "has_media": bool(isinstance(data.get("mediaId"), str) and data.get("mediaId")),
+                    "subject_chars": subject_chars,
                 }
             )
         return records, target
+
+
+def _distinct_subjects(records: list[dict]) -> list[str]:
+    """Ordered list of distinct character shortIds across upstream.
+
+    Counts ``character`` nodes by their own shortId, and ``image`` nodes
+    by the shortIds of their character grandparents. Order is preserved
+    for deterministic prompts.
+    """
+    seen_set: set[str] = set()
+    ordered: list[str] = []
+    for r in records:
+        ids: list[str] = []
+        if r["type"] == "character":
+            ids = [r["shortId"]]
+        elif r["type"] == "image":
+            ids = list(r.get("subject_chars") or [])
+        for sid in ids:
+            if sid and sid not in seen_set:
+                seen_set.add(sid)
+                ordered.append(sid)
+    return ordered
+
+
+def _image_system_prompt(subject_count: int) -> str:
+    """Branch the image system prompt on subject count.
+
+    1 subject → standard editorial single-model prompt.
+    2+ subjects → append the multi-subject clause so Claude composes a
+    couple/group shot referencing every subject by shortId.
+    """
+    if subject_count >= 2:
+        return _SYNTH_SYSTEM_IMAGE + _MULTI_SUBJECT_CLAUSE
+    return _SYNTH_SYSTEM_IMAGE
 
 
 def _format_user_message(records: list[dict], target: Node) -> str:
@@ -162,7 +274,14 @@ def _format_user_message(records: list[dict], target: Node) -> str:
         # Prefer the AI-generated brief; fall back to the user-typed prompt
         # or title so a node with no brief still contributes something.
         text = r["brief"] or r["prompt"] or r["title"] or "(no description)"
-        by_type.setdefault(r["type"], []).append(f"#{r['shortId']}: {text}")
+        suffix = ""
+        # Annotate image upstream with the character it wraps so Claude
+        # can map "this image → person #foo" without re-deriving from
+        # potentially noisy prompt text.
+        if r["type"] == "image" and r.get("subject_chars"):
+            chars = ", ".join(f"#{c}" for c in r["subject_chars"])
+            suffix = f"  [embodies character: {chars}]"
+        by_type.setdefault(r["type"], []).append(f"#{r['shortId']}: {text}{suffix}")
 
     parts: list[str] = []
     if by_type.get("character"):
@@ -174,6 +293,28 @@ def _format_user_message(records: list[dict], target: Node) -> str:
         )
     if by_type.get("image"):
         parts.append("Reference image(s):\n  - " + "\n  - ".join(by_type["image"]))
+    if by_type.get("prompt"):
+        # Prompt nodes carry reusable style/scene direction (e.g. brand
+        # tone, mood reference). Treat as authoritative styling guidance —
+        # weave the direction into the output prompt rather than treating
+        # it as just "more context". Note nodes stay decorative and are
+        # intentionally NOT surfaced here.
+        parts.append(
+            "Direction / style notes (prompt nodes — apply as styling "
+            "guidance):\n  - " + "\n  - ".join(by_type["prompt"])
+        )
+
+    # Surface multi-subject scenes (couple, group) so Claude switches to
+    # the multi-subject system clause and composes a shared frame.
+    subjects = _distinct_subjects(records)
+    if len(subjects) >= 2:
+        parts.append(
+            f"DISTINCT SUBJECTS DETECTED: {len(subjects)} people — "
+            + ", ".join(f"#{s}" for s in subjects)
+            + ". Treat as a single multi-subject scene; reference each by "
+            "their #shortId in the output."
+        )
+
     target_data = target.data or {}
     target_title = target_data.get("title") if isinstance(target_data.get("title"), str) else None
     if target_title:
@@ -220,9 +361,11 @@ async def auto_prompt_batch(
         raise PromptSynthError(f"node {node_id} not found")
 
     is_video = target.type == "video"
-    base_system = (
-        _video_system_prompt(camera) if is_video else _SYNTH_SYSTEM_IMAGE
-    )
+    subject_count = len(_distinct_subjects(records))
+    if is_video:
+        base_system = _video_system_prompt(camera, subject_count)
+    else:
+        base_system = _image_system_prompt(subject_count)
     system_prompt = base_system + _BATCH_SUFFIX.format(count=count)
     user_msg = _format_user_message(records, target)
 
@@ -278,9 +421,11 @@ async def auto_prompt(node_id: int, *, camera: Optional[str] = None) -> str:
         raise PromptSynthError(f"node {node_id} not found")
 
     is_video = target.type == "video"
-    system_prompt = (
-        _video_system_prompt(camera) if is_video else _SYNTH_SYSTEM_IMAGE
-    )
+    subject_count = len(_distinct_subjects(records))
+    if is_video:
+        system_prompt = _video_system_prompt(camera, subject_count)
+    else:
+        system_prompt = _image_system_prompt(subject_count)
     user_msg = _format_user_message(records, target)
 
     try:

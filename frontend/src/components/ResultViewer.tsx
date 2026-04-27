@@ -190,31 +190,53 @@ export function ResultViewer() {
 
   function handleRegenerate() {
     if (!rfId || !data) return;
-    // Critical: video nodes must dispatch with `kind: "video"` AND a
-    // `sourceMediaId` (the upstream image's mediaId). Without these, the
-    // store falls back to gen_image — silently produces a still image,
-    // overwriting the actual video result on the node. Walk one edge
-    // upstream to find the source image (i2v has a single source).
+    // Carry forward the node's persisted setup so regenerate matches the
+    // original generation. Without this we silently snap to LANDSCAPE / 1
+    // variant — wrong for portrait/square shots, character refs (square),
+    // and multi-variant batches.
+    const aspectRatio =
+      typeof data.aspectRatio === "string" ? data.aspectRatio : undefined;
+    const variantCount =
+      typeof data.variantCount === "number" && data.variantCount > 0
+        ? data.variantCount
+        : 1;
+
+    // Critical: video nodes must dispatch with `kind: "video"` AND the
+    // upstream source(s). Without `kind`, the store falls back to
+    // gen_image — silently produces a still image, overwriting the
+    // actual video result on the node.
     if (data.type === "video") {
       const upstreamEdge = edges.find((e) => e.target === rfId);
       const upstreamNode = upstreamEdge
         ? nodes.find((n) => n.id === upstreamEdge.source)
         : undefined;
-      const sourceMediaId = upstreamNode?.data.mediaId;
-      if (!sourceMediaId) {
+      // Prefer the full variant list so batch i2v re-runs all N sources;
+      // fall back to the singular mediaId for legacy single-source nodes.
+      const sourceMediaIds: string[] =
+        upstreamNode?.data.mediaIds ??
+        (upstreamNode?.data.mediaId ? [upstreamNode.data.mediaId] : []);
+      if (sourceMediaIds.length === 0) {
         useGenerationStore.setState({
           error: "Video re-gen needs an upstream image with rendered media.",
         });
         return;
       }
+      const useMulti = sourceMediaIds.length > 1;
       dispatchGeneration(rfId, {
         prompt: data.prompt ?? "",
         kind: "video",
-        sourceMediaId,
+        sourceMediaId: useMulti ? undefined : sourceMediaIds[0],
+        sourceMediaIds: useMulti ? sourceMediaIds : undefined,
+        aspectRatio,
+        variantCount: sourceMediaIds.length,
       });
       return;
     }
-    dispatchGeneration(rfId, { prompt: data.prompt ?? "" });
+    dispatchGeneration(rfId, {
+      prompt: data.prompt ?? "",
+      aspectRatio,
+      variantCount,
+    });
   }
 
   function handleEditPrompt() {

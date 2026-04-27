@@ -105,6 +105,236 @@ async def test_auto_prompt_calls_claude_with_upstream_briefs(client, monkeypatch
     assert matches >= 4, f"only matched {matches} pose options in pool"
 
 
+def _seed_couple_via_image_siblings() -> dict:
+    """Seed a board where the target image has 2 image upstream siblings,
+    each wrapping a different character grandparent. Mirrors the real-world
+    couple-shot graph: char_male → img_male, char_female → img_female,
+    img_male + img_female → target."""
+    with get_session() as s:
+        b = Board(name="couple")
+        s.add(b); s.commit(); s.refresh(b)
+        char_m = Node(
+            board_id=b.id, short_id="cmal", type="character",
+            x=0, y=0, w=240, h=180,
+            data={"title": "Male", "aiBrief": "young Vietnamese man",
+                  "mediaId": "uuuuuuuu-aaaa-1111-1111-111111111111"},
+            status="done",
+        )
+        char_f = Node(
+            board_id=b.id, short_id="cfem", type="character",
+            x=0, y=0, w=240, h=180,
+            data={"title": "Female", "aiBrief": "young Vietnamese woman",
+                  "mediaId": "uuuuuuuu-bbbb-1111-1111-111111111111"},
+            status="done",
+        )
+        img_m = Node(
+            board_id=b.id, short_id="imgm", type="image",
+            x=0, y=0, w=240, h=180,
+            data={"title": "M shot", "mediaId": "uuuuuuuu-mmmm-1111-1111-111111111111"},
+            status="done",
+        )
+        img_f = Node(
+            board_id=b.id, short_id="imgf", type="image",
+            x=0, y=0, w=240, h=180,
+            data={"title": "F shot", "mediaId": "uuuuuuuu-ffff-1111-1111-111111111111"},
+            status="done",
+        )
+        target = Node(
+            board_id=b.id, short_id="ctgt", type="image",
+            x=0, y=0, w=240, h=180,
+            data={"title": "Couple shot"},
+            status="idle",
+        )
+        s.add_all([char_m, char_f, img_m, img_f, target])
+        s.commit()
+        for n in (char_m, char_f, img_m, img_f, target):
+            s.refresh(n)
+        s.add(Edge(board_id=b.id, source_id=char_m.id, target_id=img_m.id))
+        s.add(Edge(board_id=b.id, source_id=char_f.id, target_id=img_f.id))
+        s.add(Edge(board_id=b.id, source_id=img_m.id, target_id=target.id))
+        s.add(Edge(board_id=b.id, source_id=img_f.id, target_id=target.id))
+        s.commit()
+        return {
+            "target_id": target.id,
+            "char_m_short": char_m.short_id,
+            "char_f_short": char_f.short_id,
+        }
+
+
+@pytest.mark.asyncio
+async def test_auto_prompt_multi_subject_detects_couple_via_image_siblings(
+    client, monkeypatch
+):
+    """When target has 2 image upstream each wrapping a different character
+    grandparent, synth must switch to multi-subject mode: the user message
+    surfaces both subjects and the system prompt enforces couple framing."""
+    ids = _seed_couple_via_image_siblings()
+    captured: dict = {}
+
+    async def stub_run(prompt, *, system_prompt=None, timeout=0):
+        captured["prompt"] = prompt
+        captured["system_prompt"] = system_prompt
+        return f"Editorial couple shot of #{ids['char_m_short']} and #{ids['char_f_short']}"
+
+    monkeypatch.setattr(claude_cli, "run_claude", stub_run)
+    out = await prompt_synth.auto_prompt(ids["target_id"])
+    assert ids["char_m_short"] in out and ids["char_f_short"] in out
+
+    # User message must declare both distinct subjects + annotate which
+    # image embodies which character.
+    user = captured["prompt"]
+    assert "DISTINCT SUBJECTS DETECTED: 2 people" in user
+    assert f"#{ids['char_m_short']}" in user
+    assert f"#{ids['char_f_short']}" in user
+    assert "embodies character" in user
+
+    # System prompt must include the multi-subject clause.
+    sp = captured["system_prompt"] or ""
+    assert "MULTI-SUBJECT MODE" in sp
+    assert "REFERENCE BY SHORTID" in sp
+    assert "couple/group" in sp.lower() or "couple / group" in sp.lower()
+    assert "complementary stance" in sp.lower()
+
+
+@pytest.mark.asyncio
+async def test_auto_prompt_single_subject_skips_multi_clause(client, monkeypatch):
+    """A normal 1-character + 1-asset graph must NOT carry the multi-subject
+    clause — only the single-subject base prompt."""
+    ids = _seed_board_with_chain()
+    captured: dict = {}
+
+    async def stub_run(prompt, *, system_prompt=None, timeout=0):
+        captured["system_prompt"] = system_prompt
+        captured["prompt"] = prompt
+        return "single subject prompt"
+
+    monkeypatch.setattr(claude_cli, "run_claude", stub_run)
+    await prompt_synth.auto_prompt(ids["target_id"])
+    sp = captured["system_prompt"] or ""
+    assert "MULTI-SUBJECT MODE" not in sp
+    assert "DISTINCT SUBJECTS DETECTED" not in (captured["prompt"] or "")
+
+
+@pytest.mark.asyncio
+async def test_auto_prompt_multi_subject_via_two_character_upstream(
+    client, monkeypatch
+):
+    """Two character nodes connected directly to the target also count as
+    multi-subject (no image-siblings indirection needed)."""
+    with get_session() as s:
+        b = Board(name="couple-direct")
+        s.add(b); s.commit(); s.refresh(b)
+        c1 = Node(
+            board_id=b.id, short_id="cd01", type="character",
+            x=0, y=0, w=240, h=180,
+            data={"title": "P1", "aiBrief": "man",
+                  "mediaId": "uuuuuuuu-cccc-1111-1111-111111111111"},
+            status="done",
+        )
+        c2 = Node(
+            board_id=b.id, short_id="cd02", type="character",
+            x=0, y=0, w=240, h=180,
+            data={"title": "P2", "aiBrief": "woman",
+                  "mediaId": "uuuuuuuu-dddd-1111-1111-111111111111"},
+            status="done",
+        )
+        tgt = Node(
+            board_id=b.id, short_id="cdtg", type="image",
+            x=0, y=0, w=240, h=180,
+            data={"title": "Couple"},
+            status="idle",
+        )
+        s.add_all([c1, c2, tgt]); s.commit()
+        for n in (c1, c2, tgt):
+            s.refresh(n)
+        s.add(Edge(board_id=b.id, source_id=c1.id, target_id=tgt.id))
+        s.add(Edge(board_id=b.id, source_id=c2.id, target_id=tgt.id))
+        s.commit()
+        tgt_id = tgt.id
+
+    captured: dict = {}
+
+    async def stub_run(prompt, *, system_prompt=None, timeout=0):
+        captured["system_prompt"] = system_prompt
+        captured["prompt"] = prompt
+        return "ok"
+
+    monkeypatch.setattr(claude_cli, "run_claude", stub_run)
+    await prompt_synth.auto_prompt(tgt_id)
+    assert "MULTI-SUBJECT MODE" in (captured["system_prompt"] or "")
+    assert "DISTINCT SUBJECTS DETECTED: 2 people" in (captured["prompt"] or "")
+
+
+@pytest.mark.asyncio
+async def test_auto_prompt_surfaces_prompt_nodes_as_direction(
+    client, monkeypatch
+):
+    """Prompt nodes carry reusable style/scene direction. Connecting one
+    upstream of an image must inject its text into the user message under
+    the 'Direction / style notes' group so Claude weaves it into the
+    output. Note nodes by contrast stay decorative and must NOT surface."""
+    with get_session() as s:
+        b = Board(name="prompt-feed")
+        s.add(b); s.commit(); s.refresh(b)
+        ch = Node(
+            board_id=b.id, short_id="pfch", type="character",
+            x=0, y=0, w=240, h=180,
+            data={"title": "P", "aiBrief": "young Vietnamese woman",
+                  "mediaId": "uuuuuuuu-pfch-1111-1111-111111111111"},
+            status="done",
+        )
+        direction = Node(
+            board_id=b.id, short_id="pfdr", type="prompt",
+            x=0, y=0, w=240, h=180,
+            data={"title": "Brand tone",
+                  "prompt": "magazine editorial mood, cinematic warm tone, "
+                            "Old Money palette"},
+            status="idle",
+        )
+        sticky = Node(
+            board_id=b.id, short_id="pfnt", type="note",
+            x=0, y=0, w=240, h=180,
+            data={"title": "TODO",
+                  "prompt": "remember to ask Tuan about the deadline"},
+            status="idle",
+        )
+        tgt = Node(
+            board_id=b.id, short_id="pftg", type="image",
+            x=0, y=0, w=240, h=180,
+            data={"title": "Hero shot"},
+            status="idle",
+        )
+        s.add_all([ch, direction, sticky, tgt]); s.commit()
+        for n in (ch, direction, sticky, tgt):
+            s.refresh(n)
+        s.add(Edge(board_id=b.id, source_id=ch.id, target_id=tgt.id))
+        s.add(Edge(board_id=b.id, source_id=direction.id, target_id=tgt.id))
+        s.add(Edge(board_id=b.id, source_id=sticky.id, target_id=tgt.id))
+        s.commit()
+        tgt_id = tgt.id
+
+    captured: dict = {}
+
+    async def stub_run(prompt, *, system_prompt=None, timeout=0):
+        captured["prompt"] = prompt
+        return "Editorial portrait with Old Money mood and warm tone"
+
+    monkeypatch.setattr(claude_cli, "run_claude", stub_run)
+    await prompt_synth.auto_prompt(tgt_id)
+    user = captured["prompt"] or ""
+
+    # Prompt node text must surface under the styling-direction group.
+    assert "Direction / style notes" in user
+    assert "magazine editorial mood" in user
+    assert "Old Money palette" in user
+    assert "#pfdr" in user
+
+    # Note node text must NOT leak into the synth context — the sticky is
+    # human-only commentary and would just dilute the prompt.
+    assert "remember to ask Tuan" not in user
+    assert "#pfnt" not in user
+
+
 @pytest.mark.asyncio
 async def test_auto_prompt_video_uses_motion_system_prompt(client, monkeypatch):
     """Video targets get a *motion* system prompt (camera moves, micro-
@@ -190,22 +420,26 @@ async def test_auto_prompt_video_static_camera_locks_system_prompt(client, monke
     # Camera lock — strict
     assert "static" in sp
     assert "no zoom" in sp or "no zoom / pan" in sp
-    # Anti-freeze + beat structure (model must shift pose, not stand still)
-    assert "anti-freeze" in sp or "leave the initial pose" in sp
-    assert "0-3s" in sp
-    assert "6-8s" in sp
-    # Scene-aware vocabulary mentioned (street + studio + café + beach)
-    assert "street" in sp
-    assert "studio" in sp
-    assert "café" in sp or "cafe" in sp
-    assert "beach" in sp or "park" in sp
+    # Anti-freeze stays as a safety floor — Veo locks frame 0 without it.
+    assert "anti-freeze" in sp
+    # Intent-first philosophy must replace the old prescriptive vocab:
+    # the synth should be told to read the source and let intent drive
+    # motion, not pick gestures from a pre-canned scene→action menu.
+    assert "intent first" in sp
+    assert "interiority" in sp or "person with" in sp
+    # Stillness must be allowed — older versions forced 2-3 pose changes
+    # which made every clip feel theatrical.
+    assert "stillness is valid" in sp
+    # Beat structure remains as an OPTION, not a requirement.
+    assert "structure is free" in sp
 
 
 @pytest.mark.asyncio
-async def test_auto_prompt_video_default_includes_scene_vocab(client, monkeypatch):
-    """Both Static and Dynamic variants should embed the scene-aware
-    vocabulary (street / studio / café / beach) so the synth picks
-    appropriate motion verbs, plus the anti-freeze anchor."""
+async def test_auto_prompt_video_default_drops_canned_scene_vocab(client, monkeypatch):
+    """Older system prompt prescribed a scene→action menu (studio = "hand
+    on hip", café = "sip from a cup", etc.) which made every same-scene
+    clip identical. Verify those canned mappings are gone — Claude is
+    trusted to pick natural motion from the source brief instead."""
     with get_session() as s:
         b = Board(name="t")
         s.add(b); s.commit(); s.refresh(b)
@@ -235,12 +469,19 @@ async def test_auto_prompt_video_default_includes_scene_vocab(client, monkeypatc
     monkeypatch.setattr(claude_cli, "run_claude", stub_run)
     await prompt_synth.auto_prompt(vid_id)  # Dynamic
     sp = (captured["system_prompt"] or "").lower()
-    assert "street" in sp and "studio" in sp
-    assert "anti-freeze" in sp or "leave the initial pose" in sp
-    # Dynamic camera clause allows subtle movement
+    # Anti-freeze + intent-first guidance still present.
+    assert "anti-freeze" in sp
+    assert "intent first" in sp
+    # Dynamic camera clause allows subtle movement.
     assert "subtle dolly" in sp or "pan is allowed" in sp
-    # Static-only constraint must NOT be in the dynamic variant
+    # Static-only constraint must NOT be in the dynamic variant.
     assert "no zoom / pan / dolly" not in sp
+    # Old canned scene→action mappings must be gone — those forced every
+    # café shot to "sip from a cup", every studio shot to "hand-on-hip",
+    # which is exactly the over-prescription this refactor removes.
+    assert "sip from a cup" not in sp
+    assert "hair tuck behind ear" not in sp
+    assert "hand slides to hip" not in sp
 
 
 @pytest.mark.asyncio
@@ -278,6 +519,127 @@ async def test_auto_prompt_video_default_camera_allows_movement(client, monkeypa
     sp = captured["system_prompt"] or ""
     # default variant should NOT enforce no-zoom/no-pan rule
     assert "no zoom, no pan" not in sp.lower()
+
+
+@pytest.mark.asyncio
+async def test_auto_prompt_video_multi_subject_when_source_has_two_chars(
+    client, monkeypatch
+):
+    """Video targets must switch to multi-subject mode when the source
+    image was generated from 2+ character upstream (couple shot). Without
+    this, Veo gets a singular 'the model' direction and typically freezes
+    one person while animating the other."""
+    with get_session() as s:
+        b = Board(name="couple-vid")
+        s.add(b); s.commit(); s.refresh(b)
+        cm = Node(
+            board_id=b.id, short_id="cvm1", type="character",
+            x=0, y=0, w=240, h=180,
+            data={"title": "M", "aiBrief": "man",
+                  "mediaId": "uuuuuuuu-mmm1-1111-1111-111111111111"},
+            status="done",
+        )
+        cf = Node(
+            board_id=b.id, short_id="cvf1", type="character",
+            x=0, y=0, w=240, h=180,
+            data={"title": "F", "aiBrief": "woman",
+                  "mediaId": "uuuuuuuu-fff1-1111-1111-111111111111"},
+            status="done",
+        )
+        couple_img = Node(
+            board_id=b.id, short_id="cvi1", type="image",
+            x=0, y=0, w=240, h=180,
+            data={"title": "Couple still",
+                  "aiBrief": "two people side-by-side in studio",
+                  "mediaId": "uuuuuuuu-cci1-1111-1111-111111111111"},
+            status="done",
+        )
+        vid = Node(
+            board_id=b.id, short_id="cvv1", type="video",
+            x=0, y=0, w=240, h=180,
+            data={"title": "Couple clip"},
+            status="idle",
+        )
+        s.add_all([cm, cf, couple_img, vid]); s.commit()
+        for n in (cm, cf, couple_img, vid):
+            s.refresh(n)
+        s.add(Edge(board_id=b.id, source_id=cm.id, target_id=couple_img.id))
+        s.add(Edge(board_id=b.id, source_id=cf.id, target_id=couple_img.id))
+        s.add(Edge(board_id=b.id, source_id=couple_img.id, target_id=vid.id))
+        s.commit()
+        vid_id = vid.id
+
+    captured: dict = {}
+
+    async def stub_run(prompt, *, system_prompt=None, timeout=0):
+        captured["system_prompt"] = system_prompt
+        captured["prompt"] = prompt
+        return "ok"
+
+    monkeypatch.setattr(claude_cli, "run_claude", stub_run)
+    await prompt_synth.auto_prompt(vid_id)
+    sp = captured["system_prompt"] or ""
+    user = captured["prompt"] or ""
+    # Multi-subject video clause must be active: per-subject anti-freeze,
+    # natural co-presence over synchronized choreography.
+    assert "MULTI-SUBJECT MODE" in sp
+    assert "PER SUBJECT" in sp
+    assert "synchronized choreography" in sp
+    assert "REFERENCE BY SHORTID" in sp
+    # User message lists both grandparent characters as distinct subjects.
+    assert "DISTINCT SUBJECTS DETECTED: 2 people" in user
+    assert "#cvm1" in user and "#cvf1" in user
+
+
+@pytest.mark.asyncio
+async def test_auto_prompt_video_solo_skips_multi_subject_clause(
+    client, monkeypatch
+):
+    """Regression: a solo source (1 character → image → video) must NOT
+    pick up the multi-subject clause."""
+    with get_session() as s:
+        b = Board(name="solo-vid")
+        s.add(b); s.commit(); s.refresh(b)
+        ch = Node(
+            board_id=b.id, short_id="svch", type="character",
+            x=0, y=0, w=240, h=180,
+            data={"title": "P", "aiBrief": "person",
+                  "mediaId": "uuuuuuuu-svch-1111-1111-111111111111"},
+            status="done",
+        )
+        img = Node(
+            board_id=b.id, short_id="svim", type="image",
+            x=0, y=0, w=240, h=180,
+            data={"title": "Shot", "aiBrief": "studio portrait",
+                  "mediaId": "uuuuuuuu-svim-1111-1111-111111111111"},
+            status="done",
+        )
+        vid = Node(
+            board_id=b.id, short_id="svvi", type="video",
+            x=0, y=0, w=240, h=180,
+            data={"title": "Clip"},
+            status="idle",
+        )
+        s.add_all([ch, img, vid]); s.commit()
+        for n in (ch, img, vid):
+            s.refresh(n)
+        s.add(Edge(board_id=b.id, source_id=ch.id, target_id=img.id))
+        s.add(Edge(board_id=b.id, source_id=img.id, target_id=vid.id))
+        s.commit()
+        vid_id = vid.id
+
+    captured: dict = {}
+
+    async def stub_run(prompt, *, system_prompt=None, timeout=0):
+        captured["system_prompt"] = system_prompt
+        captured["prompt"] = prompt
+        return "ok"
+
+    monkeypatch.setattr(claude_cli, "run_claude", stub_run)
+    await prompt_synth.auto_prompt(vid_id)
+    sp = captured["system_prompt"] or ""
+    assert "MULTI-SUBJECT MODE" not in sp
+    assert "DISTINCT SUBJECTS DETECTED" not in (captured["prompt"] or "")
 
 
 @pytest.mark.asyncio
