@@ -16,7 +16,6 @@
   <img src="https://img.shields.io/badge/Claude-CLI%20only-D97757?logo=anthropic&logoColor=white" alt="Claude CLI only"/>
   <img src="https://img.shields.io/badge/Tests-190%20passing-success?logo=pytest&logoColor=white" alt="190 passing"/>
   <img src="https://img.shields.io/badge/Status-personal%20local--only-orange" alt="Status"/>
-  <a href="https://www.facebook.com/groups/flowkit.flowboard.community"><img src="https://img.shields.io/badge/Community-Facebook%20Group-1877F2?logo=facebook&logoColor=white" alt="Community: Facebook Group"/></a>
 </p>
 
 <p align="center">
@@ -496,10 +495,6 @@ clean (frontend). Caveats:
 - ⚠ Auto-prompt + vision require the `claude` CLI on `PATH`. Without
   it, the `Generate` button still works if you type your own prompt.
 
-## Community
-
-Join the **[FlowKit & Flowboard Facebook Group](https://www.facebook.com/groups/flowkit.flowboard.community)** — the shared community for both projects. Post your generated shots, share node-graph patterns, ask for help with prompts, request features, or report bugs you've hit in the wild.
-
 ## Related
 
 - [`crisng95/flowkit`](https://github.com/crisng95/flowkit) — the same
@@ -518,3 +513,23 @@ MIT (proposed — license file pending).
 Generated media in this README was produced through the pipeline using
 [Google Flow](https://labs.google/flow). Auto-prompt + vision synthesis
 runs through [Claude](https://claude.ai) via the local CLI.
+
+---
+
+## Community & Support
+
+<p align="center">
+  <a href="https://www.facebook.com/groups/flowkit.flowboard.community">
+    <img src="https://img.shields.io/badge/Join%20the%20Community-FlowKit%20%26%20Flowboard%20on%20Facebook-1877F2?style=for-the-badge&logo=facebook&logoColor=white" alt="Join the FlowKit & Flowboard Facebook Group" />
+  </a>
+</p>
+
+The shared community for both **FlowKit** and **Flowboard**. Drop in to:
+
+- Post the shots and clips you've generated
+- Share node-graph patterns, vibe presets, and prompt recipes that work for you
+- Ask for help when an output isn't matching what you imagined
+- Request features and report bugs you've hit in the wild
+- Trade tips on Google Flow plan limits, Veo i2v behaviour, and Claude CLI setup
+
+→ **[facebook.com/groups/flowkit.flowboard.community](https://www.facebook.com/groups/flowkit.flowboard.community)**
